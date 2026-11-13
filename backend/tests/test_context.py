@@ -7,8 +7,9 @@ from sqlalchemy import select
 
 from app.agent.context import MESSAGE_LIMIT, build_context_pack
 from app.errors import PolicyError
-from app.models import Conversation, ConversationKind, Customer, Memory, Message, MessageRole
+from app.models import Conversation, ConversationKind, Customer, Memory, MemoryKind, Message, MessageRole
 from app.seed import seed
+from app.services.memory import remember
 from tests.times import pt
 
 CLOCK = pt(2026, 11, 12, 16, 0)
@@ -184,3 +185,41 @@ def test_context_pack_rejects_a_bad_audience(session, kwargs, message):
     seed(session)
     with pytest.raises(PolicyError, match=message):
         build_context_pack(session, **kwargs)
+
+
+def test_shop_policy_is_visible_and_customer_facts_stay_put(session):
+    seed(session)
+    remember(
+        session,
+        content="We stopped doing Sunday calls",
+        kind=MemoryKind.policy,
+        reason="Owner said Sunday calls are over",
+    )
+    remember(session, content="Old rule", kind=MemoryKind.policy, reason="Replaced")
+    old = session.scalar(select(Memory).where(Memory.content == "Old rule"))
+    assert old is not None
+    old.active = False
+    session.commit()
+
+    james = _customer(session, "James Okonkwo")
+    expected = [{"kind": "policy", "content": "We stopped doing Sunday calls"}]
+    owner = build_context_pack(session, audience="owner")
+    customer = build_context_pack(session, audience="customer", customer_id=james.id)
+
+    assert owner["shop_memories"] == expected
+    assert customer["shop_memories"] == expected
+    assert "Old rule" not in json.dumps(owner)
+    assert "Gate code 4481" not in json.dumps(owner)
+    assert "Dog in the yard" not in json.dumps(owner)
+
+
+def test_owner_note_about_a_customer_stays_with_the_owner(session):
+    seed(session)
+    james = _customer(session, "James Okonkwo")
+    _say(session, james, "Check the gate before Friday.", kind=ConversationKind.owner)
+
+    owner = build_context_pack(session, audience="owner")
+    customer = build_context_pack(session, audience="customer", customer_id=james.id)
+
+    assert [message["body"] for message in owner["recent_messages"]] == ["Check the gate before Friday."]
+    assert customer["recent_messages"] == []

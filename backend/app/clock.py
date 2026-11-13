@@ -44,6 +44,14 @@ def read_clock(session: Session) -> datetime:
     return row.current_time.astimezone(SHOP_TZ)
 
 
+def shop_iso(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    return value.astimezone(SHOP_TZ).isoformat()
+
+
 def set_clock(session: Session, when: datetime) -> datetime:
     if when.tzinfo is None or when.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")

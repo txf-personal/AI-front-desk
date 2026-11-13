@@ -36,6 +36,7 @@ class UrllibTransport:
             with urllib.request.urlopen(request, timeout=60) as response:
                 raw = response.read().decode()
         except urllib.error.HTTPError as exc:
+            exc.read()
             raise LLMError(f"model request failed: {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise LLMError("model request failed") from exc
@@ -124,9 +125,13 @@ def parse_openai_response(payload: dict) -> Completion:
         message = payload["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise LLMError("OpenAI response is missing a message") from exc
+    if not isinstance(message, dict):
+        raise LLMError("OpenAI response is missing a message")
+    raw_calls = message.get("tool_calls") or []
+    if not isinstance(raw_calls, list):
+        raise LLMError("OpenAI tool call is malformed")
     text = _openai_text(message.get("content"))
-    calls = tuple(_openai_call(raw) for raw in message.get("tool_calls") or [])
-    return Completion(text=text, tool_calls=calls)
+    return Completion(text=text, tool_calls=tuple(_openai_call(raw) for raw in raw_calls))
 
 
 def parse_anthropic_response(payload: dict) -> Completion:

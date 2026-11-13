@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, FastAPI, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from sqlalchemy.orm import Session
@@ -85,7 +85,7 @@ def post_clock(body: AdvanceClock, session: SessionDep):
     try:
         clock = advance_clock(session, hours=body.hours, to=body.to)
     except ValueError as exc:
-        return JSONResponse(status_code=422, content={"detail": str(exc)})
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"clock": iso(clock)}
 
 

@@ -357,6 +357,23 @@ def test_quote_rejects_an_off_book_price(session):
     assert _audits(session, "create_quote") == []
 
 
+def test_quote_requires_a_price(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    before = _count(session, Appointment)
+    with pytest.raises(PolicyError, match="price is not on the book"):
+        create_quote(
+            session,
+            customer_id=james.id,
+            service="faucet",
+            summary="Faucet quote",
+            reason="Customer asked for a price",
+            price=None,
+        )
+    assert _count(session, Appointment) == before
+    assert _audits(session, "create_quote") == []
+
+
 def test_quote_at_the_book_price_copies_address_and_does_not_hold_a_slot(session):
     seed(session)
     james = _named(session, Customer, "James Okonkwo")

@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.errors import require_text
 from app.models import Business, Setting
+from app.services.audit import write_audit
 
 
 def require_business(session: Session) -> Business:
@@ -12,6 +13,13 @@ def require_business(session: Session) -> Business:
     if len(businesses) != 1:
         raise LookupError("expected exactly one business")
     return businesses[0]
+
+
+def all_settings(session: Session, business_id: int) -> dict:
+    return {
+        row.key: row.value
+        for row in session.scalars(select(Setting).where(Setting.business_id == business_id).order_by(Setting.key))
+    }
 
 
 def get_setting(session: Session, key: str):
@@ -24,8 +32,6 @@ def get_setting(session: Session, key: str):
 
 def set_setting(session: Session, key: str, value, *, reason: str):
     """Replace one existing setting and record why."""
-    from app.services.audit import write_audit
-
     reason_text = require_text(reason, "reason is required")
     business = require_business(session)
     row = _setting(session, business.id, key)

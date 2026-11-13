@@ -1,13 +1,11 @@
 """JSON shapes for the shop HTTP API. Times are shop-local."""
 
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.clock import SHOP_TZ, read_clock
-from app.models import Appointment, AuditEvent, Automation, Customer, Escalation, Memory, Setting, Technician
-from app.settings_store import require_business
+from app.clock import read_clock, shop_iso as iso
+from app.models import Appointment, AuditEvent, Automation, Customer, Escalation, Memory, Technician
+from app.settings_store import all_settings, require_business
 
 
 def build_bootstrap(session: Session) -> dict:
@@ -19,14 +17,13 @@ def build_bootstrap(session: Session) -> dict:
         select(Memory).where(Memory.business_id == business.id, Memory.active.is_(True)).order_by(Memory.id)
     ).all()
     by_customer: dict[int, list] = {}
+    shop_memories = []
     for memory in memories:
         if memory.customer_id is None:
-            continue
-        by_customer.setdefault(memory.customer_id, []).append(memory)
-    settings = {
-        row.key: row.value
-        for row in session.scalars(select(Setting).where(Setting.business_id == business.id).order_by(Setting.key))
-    }
+            shop_memories.append(memory)
+        else:
+            by_customer.setdefault(memory.customer_id, []).append(memory)
+    settings = all_settings(session, business.id)
     return {
         "business": {
             "id": business.id,
@@ -37,6 +34,10 @@ def build_bootstrap(session: Session) -> dict:
         },
         "clock": iso(read_clock(session)),
         "settings": settings,
+        "shop_memories": [
+            {"id": memory.id, "kind": memory.kind.value, "content": memory.content}
+            for memory in shop_memories
+        ],
         "technicians": [
             {"id": row.id, "name": row.name, "skills": row.skills}
             for row in session.scalars(
@@ -92,12 +93,6 @@ def customer_payload(customer: Customer) -> dict:
 
 def escalation_payload(row: Escalation) -> dict:
     return _escalation(row)
-
-
-def iso(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.astimezone(SHOP_TZ).isoformat()
 
 
 def _customer(customer: Customer, memories: list) -> dict:

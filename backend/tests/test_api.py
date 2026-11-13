@@ -5,9 +5,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.main import create_app
-from app.models import Customer
+from app.models import Customer, MemoryKind
 from app.seed import seed
 from app.services.escalations import open_escalation
+from app.services.memory import remember
 
 CLOCK = "2026-11-12T16:00:00-08:00"
 NEXT_MORNING = "2026-11-13T07:00:00-08:00"
@@ -35,6 +36,7 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
         "business",
         "clock",
         "settings",
+        "shop_memories",
         "technicians",
         "customers",
         "appointments",
@@ -47,6 +49,7 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
     assert body["business"]["timezone"] == "America/Los_Angeles"
     assert body["clock"] == CLOCK
     assert body["settings"]["sunday_calls"] is True
+    assert body["shop_memories"] == []
     assert len(body["technicians"]) == 4
     assert body["automations"] == []
     assert body["escalations"] == []
@@ -71,6 +74,21 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
     visit = next(job for job in body["appointments"] if job["customer_id"] == luis["id"])
     assert visit["start"] == "2026-11-13T09:00:00-08:00"
     assert visit["end"] == "2026-11-13T10:00:00-08:00"
+
+
+def test_bootstrap_lists_a_shop_policy_apart_from_customer_facts(client, session):
+    row = remember(
+        session,
+        content="We stopped doing Sunday calls",
+        kind=MemoryKind.policy,
+        reason="Owner said Sunday calls are over",
+    )
+    body = client.get("/api/bootstrap").json()
+    assert body["shop_memories"] == [
+        {"id": row.id, "kind": "policy", "content": "We stopped doing Sunday calls"}
+    ]
+    james = next(customer for customer in body["customers"] if customer["name"] == "James Okonkwo")
+    assert "We stopped doing Sunday calls" not in [memory["content"] for memory in james["memories"]]
 
 
 def test_create_caller_persists_name_and_phone(client):

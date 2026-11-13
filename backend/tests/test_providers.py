@@ -174,6 +174,16 @@ def test_openai_rejects_a_tool_call_without_a_usable_reason(arguments):
         parse_openai_response(payload)
 
 
+def test_openai_rejects_a_message_that_is_not_an_object():
+    with pytest.raises(LLMError, match="missing a message"):
+        parse_openai_response({"choices": [{"message": None}]})
+
+
+def test_openai_rejects_tool_calls_that_are_not_a_list():
+    with pytest.raises(LLMError, match="malformed"):
+        parse_openai_response({"choices": [{"message": {"content": None, "tool_calls": "nope"}}]})
+
+
 def test_anthropic_rejects_a_tool_call_without_a_reason():
     payload = {
         "content": [

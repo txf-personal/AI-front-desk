@@ -34,14 +34,10 @@ def book_appointment(
     price: int | None = None,
 ) -> Appointment:
     """Book a visit inside shop hours, on a technician who has the skill and is free."""
-    summary_text = require_text(summary, "summary is required")
-    reason_text = require_text(reason, "reason is required")
+    customer, spec, summary_text, reason_text = _subject(
+        session, customer_id, service, summary, reason, price, price_required=False
+    )
     start_at = _aware(start)
-    customer = _customer(session, customer_id)
-    if not customer.address:
-        raise PolicyError("customer has no address")
-    spec = _service_spec(session, service)
-    _check_price(spec, price)
     technician = _technician(session, technician_id, customer.business_id)
     _check_skill(technician, spec)
     end_at = start_at + timedelta(minutes=int(spec["duration_min"]))
@@ -94,13 +90,9 @@ def create_quote(
     price: int,
 ) -> Appointment:
     """Record a quote at the published price. The slot stays empty."""
-    summary_text = require_text(summary, "summary is required")
-    reason_text = require_text(reason, "reason is required")
-    customer = _customer(session, customer_id)
-    if not customer.address:
-        raise PolicyError("customer has no address")
-    spec = _service_spec(session, service)
-    _check_price(spec, price)
+    customer, spec, summary_text, reason_text = _subject(
+        session, customer_id, service, summary, reason, price, price_required=True
+    )
     now = read_clock(session)
     appointment = Appointment(
         business_id=customer.business_id,
@@ -132,6 +124,17 @@ def create_quote(
     return appointment
 
 
+def _subject(session, customer_id, service, summary, reason, price, *, price_required: bool):
+    summary_text = require_text(summary, "summary is required")
+    reason_text = require_text(reason, "reason is required")
+    customer = _customer(session, customer_id)
+    if not customer.address:
+        raise PolicyError("customer has no address")
+    spec = _service_spec(session, service)
+    _check_price(spec, price, required=price_required)
+    return customer, spec, summary_text, reason_text
+
+
 def _aware(start: datetime) -> datetime:
     if not isinstance(start, datetime) or start.tzinfo is None or start.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
@@ -159,8 +162,8 @@ def _service_spec(session: Session, service: str) -> dict:
     raise PolicyError("unknown service")
 
 
-def _check_price(spec: dict, price: int | None) -> None:
-    if price is None:
+def _check_price(spec: dict, price: int | None, *, required: bool) -> None:
+    if price is None and not required:
         return
     if isinstance(price, bool) or not isinstance(price, int) or price != spec["price"]:
         raise PolicyError("price is not on the book")
@@ -207,10 +210,10 @@ def _check_conflicts(session, customer, technician, start, end) -> None:
     for row in rows:
         if not _overlaps(start, end, row.start, row.end):
             continue
-        if row.technician_id == technician.id:
-            raise PolicyError("technician is already booked")
         if row.customer_id == customer.id:
             raise PolicyError("customer is already booked")
+        if row.technician_id == technician.id:
+            raise PolicyError("technician is already booked")
 
 
 def _overlaps(start, end, other_start, other_end) -> bool:
