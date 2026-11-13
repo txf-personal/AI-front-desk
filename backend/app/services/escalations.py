@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.clock import read_clock
 from app.errors import PolicyError, require_text
-from app.models import Conversation, Customer, Escalation, EscalationStatus
+from app.models import AuditActor, Conversation, Customer, Escalation, EscalationStatus
 from app.services.audit import write_audit
 from app.settings_store import require_business
 
@@ -49,6 +49,32 @@ def open_escalation(
         related_type="escalation",
         related_id=row.id,
         conversation_id=conversation_id,
+    )
+    session.commit()
+    return row
+
+
+def resolve_escalation(session: Session, escalation_id: int, *, note: str | None = None) -> Escalation:
+    """Mark an open escalation resolved. A second call leaves the first timestamp."""
+    business = require_business(session)
+    row = session.get(Escalation, escalation_id)
+    if row is None or row.business_id != business.id:
+        raise LookupError("unknown escalation")
+    if row.status == EscalationStatus.resolved:
+        raise PolicyError("escalation is already resolved")
+    reasoning = note.strip() if isinstance(note, str) and note.strip() else "Owner resolved the escalation"
+    row.status = EscalationStatus.resolved
+    row.resolved_at = read_clock(session)
+    write_audit(
+        session,
+        business_id=business.id,
+        actor=AuditActor.owner,
+        action="resolve_escalation",
+        reasoning=reasoning,
+        payload={"escalation_id": row.id},
+        related_type="escalation",
+        related_id=row.id,
+        conversation_id=row.conversation_id,
     )
     session.commit()
     return row
