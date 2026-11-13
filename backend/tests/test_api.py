@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.main import create_app
-from app.models import Customer, MemoryKind
+from app.clock import read_clock
+from app.models import Conversation, ConversationKind, Customer, MemoryKind, Message, MessageRole
 from app.seed import seed
 from app.services.escalations import open_escalation
 from app.services.memory import remember
@@ -43,6 +44,7 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
         "automations",
         "escalations",
         "audits",
+        "conversations",
     }
     assert body["business"]["name"] == "Northside Plumbing"
     assert body["business"]["owner_name"] == "Maria Chen"
@@ -58,6 +60,7 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
     ]
     assert body["escalations"] == []
     assert body["audits"] == []
+    assert body["conversations"] == []
 
     james = next(customer for customer in body["customers"] if customer["name"] == "James Okonkwo")
     assert james["phone"] == "206-555-0101"
@@ -93,6 +96,40 @@ def test_bootstrap_lists_a_shop_policy_apart_from_customer_facts(client, session
     ]
     james = next(customer for customer in body["customers"] if customer["name"] == "James Okonkwo")
     assert "We stopped doing Sunday calls" not in [memory["content"] for memory in james["memories"]]
+
+
+def test_bootstrap_includes_a_customer_thread(client, session):
+    james = session.scalar(select(Customer).where(Customer.name == "James Okonkwo"))
+    assert james is not None
+    when = read_clock(session)
+    conversation = Conversation(
+        business_id=james.business_id,
+        customer_id=james.id,
+        kind=ConversationKind.customer,
+        created_at=when,
+    )
+    session.add(conversation)
+    session.flush()
+    message = Message(
+        conversation_id=conversation.id,
+        role=MessageRole.customer,
+        body="The gate code is 4481",
+        created_at=when,
+    )
+    session.add(message)
+    session.commit()
+
+    body = client.get("/api/bootstrap").json()
+    thread = next(row for row in body["conversations"] if row["customer_id"] == james.id)
+    assert thread["kind"] == "customer"
+    assert thread["messages"] == [
+        {
+            "id": message.id,
+            "role": "customer",
+            "body": "The gate code is 4481",
+            "created_at": CLOCK,
+        }
+    ]
 
 
 def test_create_caller_persists_name_and_phone(client):

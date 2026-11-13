@@ -308,7 +308,7 @@ def _say(session, business_id: int, customer_id: int | None, body: str, when: da
         filters.append(Conversation.customer_id.is_(None))
     else:
         filters.append(Conversation.customer_id == customer_id)
-    conversation = session.scalar(select(Conversation).where(*filters).order_by(Conversation.id))
+    conversation = session.scalar(select(Conversation).where(*filters).order_by(Conversation.id.desc()))
     if conversation is None:
         conversation = Conversation(
             business_id=business_id,

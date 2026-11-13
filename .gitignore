@@ -10,3 +10,7 @@ dist/
 build/
 *.db
 .env
+node_modules/
+test-results/
+playwright-report/
+blob-report/

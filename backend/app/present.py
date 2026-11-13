@@ -4,7 +4,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clock import read_clock, shop_iso as iso
-from app.models import Appointment, AuditEvent, Automation, Customer, Escalation, Memory, Technician
+from app.models import (
+    Appointment,
+    AuditEvent,
+    Automation,
+    Conversation,
+    Customer,
+    Escalation,
+    Memory,
+    Message,
+    Technician,
+)
 from app.settings_store import all_settings, require_business
 
 
@@ -84,6 +94,7 @@ def build_bootstrap(session: Session) -> dict:
                 select(AuditEvent).where(AuditEvent.business_id == business.id).order_by(AuditEvent.id)
             )
         ],
+        "conversations": _conversations(session, business.id),
     }
 
 
@@ -124,6 +135,39 @@ def _appointment(row: Appointment) -> dict:
         "address": row.address,
         "access_notes": row.access_notes,
     }
+
+
+def _conversations(session: Session, business_id: int) -> list[dict]:
+    rows = session.scalars(
+        select(Conversation).where(Conversation.business_id == business_id).order_by(Conversation.id)
+    ).all()
+    if not rows:
+        return []
+    grouped: dict[int, list[Message]] = {}
+    messages = session.scalars(
+        select(Message)
+        .where(Message.conversation_id.in_([row.id for row in rows]))
+        .order_by(Message.id)
+    ).all()
+    for message in messages:
+        grouped.setdefault(message.conversation_id, []).append(message)
+    return [
+        {
+            "id": row.id,
+            "customer_id": row.customer_id,
+            "kind": row.kind.value,
+            "messages": [
+                {
+                    "id": message.id,
+                    "role": message.role.value,
+                    "body": message.body,
+                    "created_at": iso(message.created_at),
+                }
+                for message in grouped.get(row.id, [])
+            ],
+        }
+        for row in rows
+    ]
 
 
 def _escalation(row: Escalation) -> dict:
