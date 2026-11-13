@@ -104,7 +104,7 @@ def build_client(env: Mapping[str, str] | None = None) -> OpenAIClient | Anthrop
 
 
 def openai_body(model: str, messages: list[dict], tools: list[dict]) -> dict:
-    body = {"model": model, "messages": [_text_message(message) for message in messages]}
+    body = {"model": model, "messages": [_openai_message(message) for message in messages]}
     if tools:
         body["tools"] = [_openai_tool(tool) for tool in tools]
     return body
@@ -206,6 +206,47 @@ def _openai_text(content: object) -> str:
     raise LLMError("OpenAI response is missing a message")
 
 
+def _openai_message(message: dict) -> dict:
+    if message.get("role") == "tool":
+        content = message.get("content")
+        tool_call_id = message.get("tool_call_id")
+        if not isinstance(content, str) or not isinstance(tool_call_id, str) or not tool_call_id:
+            raise LLMError("message must have a role and text content")
+        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+    calls = message.get("tool_calls")
+    if calls:
+        if message.get("role") != "assistant" or not isinstance(calls, list):
+            raise LLMError("message must have a role and text content")
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise LLMError("message must have a role and text content")
+        return {
+            "role": "assistant",
+            "content": content or None,
+            "tool_calls": [_openai_outgoing_call(call) for call in calls],
+        }
+    return _text_message(message)
+
+
+def _openai_outgoing_call(call: dict) -> dict:
+    name = call.get("name")
+    call_id = call.get("id")
+    arguments = call.get("arguments")
+    reason = call.get("reason")
+    if not isinstance(name, str) or not isinstance(call_id, str) or not isinstance(arguments, dict):
+        raise LLMError("message must have a role and text content")
+    if not isinstance(reason, str):
+        raise LLMError("message must have a role and text content")
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps({**arguments, "reason": reason}),
+        },
+    }
+
+
 def _text_message(message: dict) -> dict:
     role = message.get("role")
     content = message.get("content")
@@ -217,13 +258,55 @@ def _text_message(message: dict) -> dict:
 def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
     system: list[str] = []
     chat: list[dict] = []
+    pending: list[dict] = []
+
+    def flush_results() -> None:
+        if pending:
+            chat.append({"role": "user", "content": list(pending)})
+            pending.clear()
+
     for message in messages:
+        if message.get("role") == "tool":
+            content = message.get("content")
+            tool_call_id = message.get("tool_call_id")
+            if not isinstance(content, str) or not isinstance(tool_call_id, str) or not tool_call_id:
+                raise LLMError("message must have a role and text content")
+            pending.append({"type": "tool_result", "tool_use_id": tool_call_id, "content": content})
+            continue
+        flush_results()
+        calls = message.get("tool_calls")
+        if calls:
+            if message.get("role") != "assistant" or not isinstance(calls, list):
+                raise LLMError("message must have a role and text content")
+            blocks: list[dict] = []
+            text = message.get("content") or ""
+            if not isinstance(text, str):
+                raise LLMError("message must have a role and text content")
+            if text:
+                blocks.append({"type": "text", "text": text})
+            for call in calls:
+                blocks.append(_anthropic_outgoing_call(call))
+            chat.append({"role": "assistant", "content": blocks})
+            continue
         copied = _text_message(message)
         if copied["role"] == "system":
             system.append(copied["content"])
         else:
             chat.append(copied)
+    flush_results()
     return "\n\n".join(system), chat
+
+
+def _anthropic_outgoing_call(call: dict) -> dict:
+    name = call.get("name")
+    call_id = call.get("id")
+    arguments = call.get("arguments")
+    reason = call.get("reason")
+    if not isinstance(name, str) or not isinstance(call_id, str) or not isinstance(arguments, dict):
+        raise LLMError("message must have a role and text content")
+    if not isinstance(reason, str):
+        raise LLMError("message must have a role and text content")
+    return {"type": "tool_use", "id": call_id, "name": name, "input": {**arguments, "reason": reason}}
 
 
 def _openai_tool(tool: dict) -> dict:

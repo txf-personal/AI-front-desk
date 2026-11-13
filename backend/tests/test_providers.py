@@ -15,6 +15,8 @@ from app.agent.providers import (
     FakeLLM,
     OpenAIClient,
     build_client,
+    anthropic_body,
+    openai_body,
     parse_anthropic_response,
     parse_openai_response,
 )
@@ -253,6 +255,44 @@ def test_factory_uses_the_configured_model_and_defaults_to_openai():
 def test_factory_rejects_an_unknown_provider():
     with pytest.raises(ConfigError, match="unknown LLM provider: gemini"):
         build_client({"LLM_PROVIDER": "gemini", "OPENAI_API_KEY": "sk-test"})
+
+
+def test_tool_results_are_sent_back_to_the_provider():
+    messages = [
+        {"role": "system", "content": "You are the front desk."},
+        {"role": "user", "content": "Book it."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_book",
+                    "name": "book_appointment",
+                    "arguments": BOOK_ARGUMENTS,
+                    "reason": BOOK_REASON,
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_book", "content": '{"access_notes": "Gate code 4481"}'},
+    ]
+
+    openai = openai_body("gpt-test", messages, [])
+    assert openai["messages"][0] == MESSAGES[0]
+    assert openai["messages"][1] == {"role": "user", "content": "Book it."}
+    assert openai["messages"][2]["content"] is None
+    sent = json.loads(openai["messages"][2]["tool_calls"][0]["function"]["arguments"])
+    assert sent["reason"] == BOOK_REASON
+    assert sent["service"] == "leak"
+    assert openai["messages"][3]["role"] == "tool"
+    assert openai["messages"][3]["tool_call_id"] == "call_book"
+
+    anthropic = anthropic_body("claude-test", messages, [])
+    assert anthropic["system"] == "You are the front desk."
+    assert anthropic["messages"][0] == {"role": "user", "content": "Book it."}
+    assert anthropic["messages"][1]["content"][0]["type"] == "tool_use"
+    assert anthropic["messages"][1]["content"][0]["input"]["reason"] == BOOK_REASON
+    assert anthropic["messages"][2]["content"][0]["type"] == "tool_result"
+    assert anthropic["messages"][2]["content"][0]["tool_use_id"] == "call_book"
 
 
 def test_fake_model_returns_scripted_replies_in_order():

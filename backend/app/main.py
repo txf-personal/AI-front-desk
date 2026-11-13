@@ -1,4 +1,4 @@
-"""Shop HTTP API. Clock advances change the time only."""
+"""Shop HTTP API. Clock advances change the time only. Messages run one model turn."""
 
 from typing import Annotated, Literal
 
@@ -7,6 +7,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from sqlalchemy.orm import Session
 
+from app.agent.errors import ConfigError, LLMError
+from app.agent.loop import run_turn
+from app.agent.providers import build_client
 from app.clock import ClockNotSeeded, advance_clock
 from app.errors import PolicyError
 from app.present import build_bootstrap, customer_payload, escalation_payload, iso
@@ -50,6 +53,28 @@ class ResolveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     note: str | None = None
+
+
+class NewMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audience: Literal["customer", "owner"]
+    customer_id: int | None = None
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be blank")
+        return text
+
+    @model_validator(mode="after")
+    def customer_for_customer_audience(self):
+        if self.audience == "customer" and self.customer_id is None:
+            raise ValueError("customer_id is required")
+        return self
 
 
 def get_session(request: Request):
@@ -99,12 +124,28 @@ def post_resolve(
     return escalation_payload(row)
 
 
-def create_app(session_factory) -> FastAPI:
+@router.post("/messages")
+def post_message(body: NewMessage, request: Request, session: SessionDep):
+    llm = request.app.state.llm or build_client()
+    turn = run_turn(
+        session,
+        llm,
+        audience=body.audience,
+        customer_id=body.customer_id,
+        body=body.body,
+    )
+    return {"reply": turn.reply, "conversation_id": turn.conversation_id}
+
+
+def create_app(session_factory, llm=None) -> FastAPI:
     app = FastAPI(title="Northside Plumbing")
     app.state.session_factory = session_factory
+    app.state.llm = llm
     app.add_exception_handler(PolicyError, _policy_error)
     app.add_exception_handler(LookupError, _lookup_error)
     app.add_exception_handler(ClockNotSeeded, _clock_missing)
+    app.add_exception_handler(LLMError, _llm_error)
+    app.add_exception_handler(ConfigError, _config_error)
     app.include_router(router)
     return app
 
@@ -118,4 +159,12 @@ def _lookup_error(_request, exc: LookupError):
 
 
 def _clock_missing(_request, exc: ClockNotSeeded):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+def _llm_error(_request, exc: LLMError):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+def _config_error(_request, exc: ConfigError):
     return JSONResponse(status_code=503, content={"detail": str(exc)})

@@ -1,11 +1,11 @@
 """Schedule a visit or record a quote. Rules run before any insert."""
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.clock import SHOP_TZ, read_clock
+from app.clock import SHOP_TZ, read_clock, shop_iso
 from app.errors import PolicyError, require_text
 from app.models import (
     Appointment,
@@ -174,9 +174,51 @@ def _check_skill(technician: Technician, spec: dict) -> None:
         raise PolicyError("technician lacks the required skill")
 
 
+def available_slots(session: Session, *, customer_id: int, service: str, day: date) -> list[dict]:
+    """Open slots for one service on one shop day. Nothing is written."""
+    customer = _customer(session, customer_id)
+    spec = _service_spec(session, service)
+    opening, closing = _open_span(session, datetime.combine(day, time(12), tzinfo=SHOP_TZ))
+    duration = timedelta(minutes=int(spec["duration_min"]))
+    window_start = datetime.combine(day, opening, tzinfo=SHOP_TZ)
+    window_end = datetime.combine(day, closing, tzinfo=SHOP_TZ)
+    technicians = session.scalars(
+        select(Technician).where(Technician.business_id == customer.business_id).order_by(Technician.id)
+    ).all()
+    slots = []
+    cursor_step = timedelta(minutes=30)
+    for technician in technicians:
+        if not set(spec["skills"]) <= set(technician.skills):
+            continue
+        cursor = window_start
+        while cursor + duration <= window_end:
+            end = cursor + duration
+            try:
+                _check_conflicts(session, customer, technician, cursor, end)
+            except PolicyError:
+                cursor += cursor_step
+                continue
+            slots.append(
+                {
+                    "technician_id": technician.id,
+                    "technician_name": technician.name,
+                    "start": shop_iso(cursor),
+                    "end": shop_iso(end),
+                }
+            )
+            cursor += cursor_step
+    return slots
+
+
 def _check_hours(session: Session, start: datetime, end: datetime) -> None:
     if end.date() != start.date():
         raise PolicyError("outside business hours")
+    opening, closing = _open_span(session, start)
+    if start.time() < opening or end.time() > closing:
+        raise PolicyError("outside business hours")
+
+
+def _open_span(session: Session, start: datetime) -> tuple[time, time]:
     day = _DAYS[start.weekday()]
     sunday_calls = get_setting(session, "sunday_calls")
     if day == "sunday" and sunday_calls is not True:
@@ -187,10 +229,7 @@ def _check_hours(session: Session, start: datetime, end: datetime) -> None:
         span = hours.get("monday")
     if not span:
         raise PolicyError("outside business hours")
-    opening = _clock_time(span[0])
-    closing = _clock_time(span[1])
-    if start.time() < opening or end.time() > closing:
-        raise PolicyError("outside business hours")
+    return _clock_time(span[0]), _clock_time(span[1])
 
 
 def _clock_time(value: str) -> time:

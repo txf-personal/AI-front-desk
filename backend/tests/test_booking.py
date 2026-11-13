@@ -1,6 +1,6 @@
 """Unit tests for booking and quote rules."""
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -17,7 +17,7 @@ from app.models import (
     Technician,
 )
 from app.seed import seed
-from app.services.booking import book_appointment, create_quote
+from app.services.booking import available_slots, book_appointment, create_quote
 from app.settings_store import set_setting
 from tests.times import assert_wall, pt
 
@@ -465,3 +465,26 @@ def test_customer_without_an_address_cannot_be_booked(session):
             technician_id=andre.id,
         )
     assert _count(session, Appointment) == before
+
+
+def test_availability_skips_a_booked_technician_and_keeps_the_next_slot(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    before = _count(session, Appointment)
+    slots = available_slots(session, customer_id=james.id, service="drain", day=date(2026, 11, 13))
+    starts = {(slot["technician_name"], slot["start"]) for slot in slots}
+
+    assert ("Brooke Hale", "2026-11-13T08:00:00-08:00") in starts
+    assert ("Brooke Hale", "2026-11-13T09:00:00-08:00") not in starts
+    assert ("Brooke Hale", "2026-11-13T10:00:00-08:00") in starts
+    assert ("Dana Okada", "2026-11-13T09:00:00-08:00") in starts
+    assert all(slot["technician_name"] != "Andre Williams" for slot in slots)
+    assert _count(session, Appointment) == before
+
+
+def test_availability_rejects_sunday_when_sunday_calls_are_off(session):
+    seed(session)
+    set_setting(session, "sunday_calls", False, reason="Owner turned Sunday calls off")
+    james = _named(session, Customer, "James Okonkwo")
+    with pytest.raises(PolicyError, match="sunday calls are off"):
+        available_slots(session, customer_id=james.id, service="drain", day=date(2026, 11, 15))
