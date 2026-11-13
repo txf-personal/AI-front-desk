@@ -274,7 +274,11 @@ def test_owner_can_stop_sunday_calls_and_store_the_words(session):
     assert setting_audit.reasoning == "Owner said Sunday calls are over"
     assert memory_audit is not None
     assert memory_audit.reasoning == "Owner said Sunday calls are over"
-    assert [tool["name"] for tool in fake.calls[0]["tools"]] == ["update_setting", "remember_policy"]
+    assert [tool["name"] for tool in fake.calls[0]["tools"]] == [
+        "update_setting",
+        "remember_policy",
+        "create_automation",
+    ]
     assert "4481" not in fake.calls[0]["messages"][1]["content"]
     assert turn.reply == "Sunday calls are off. I'll remember that."
     james = _named(session, Customer, "James Okonkwo")

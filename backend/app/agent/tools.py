@@ -8,6 +8,7 @@ from app.agent.types import ToolCall
 from app.clock import shop_iso
 from app.errors import PolicyError, require_text
 from app.models import MemoryKind
+from app.services.automations import create_quote_report
 from app.services.booking import available_slots, book_appointment, create_quote
 from app.services.escalations import open_escalation
 from app.services.memory import remember
@@ -20,7 +21,7 @@ CUSTOMER_TOOLS = (
     "create_quote",
     "escalate",
 )
-OWNER_TOOLS = ("update_setting", "remember_policy")
+OWNER_TOOLS = ("update_setting", "remember_policy", "create_automation")
 
 
 def tools_for(audience: str) -> list[dict]:
@@ -152,6 +153,25 @@ def _update_setting(session, arguments, *, reason, customer_id, conversation_id)
     return {"key": key, "value": stored}
 
 
+def _create_automation(session, arguments, *, reason, customer_id, conversation_id):
+    row = create_quote_report(
+        session,
+        instruction=_arg(arguments, "instruction"),
+        weekday=_arg(arguments, "weekday"),
+        hour=_clock_arg(arguments, "hour", 7, 23),
+        minute=_clock_arg(arguments, "minute", 30, 59),
+        reason=reason,
+        conversation_id=conversation_id,
+    )
+    return {
+        "automation_id": row.id,
+        "name": row.name,
+        "weekday": row.schedule["weekday"],
+        "hour": row.schedule["hour"],
+        "minute": row.schedule["minute"],
+    }
+
+
 def _remember_policy(session, arguments, *, reason, customer_id, conversation_id):
     row = remember(
         session,
@@ -202,6 +222,15 @@ def _start(value) -> datetime:
 def _integer(value, message: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise PolicyError(message)
+    return value
+
+
+def _clock_arg(arguments: dict, key: str, default: int, limit: int) -> int:
+    if not isinstance(arguments, dict) or key not in arguments or arguments[key] is None:
+        return default
+    value = arguments[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= limit:
+        raise PolicyError(f"{key} is out of range")
     return value
 
 
@@ -284,6 +313,22 @@ _SPECS = {
         "description": "Remember a shop policy in the owner's words.",
         "parameters": _schema({"content": {"type": "string"}}, ["content"]),
     },
+    "create_automation": {
+        "name": "create_automation",
+        "description": "Save a weekly report of quotes that are still waiting. The default time is 7:30.",
+        "parameters": _schema(
+            {
+                "instruction": {"type": "string"},
+                "weekday": {
+                    "type": "string",
+                    "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+                },
+                "hour": {"type": "integer"},
+                "minute": {"type": "integer"},
+            },
+            ["instruction", "weekday"],
+        ),
+    },
 }
 
 _HANDLERS = {
@@ -294,4 +339,5 @@ _HANDLERS = {
     "escalate": _escalate,
     "update_setting": _update_setting,
     "remember_policy": _remember_policy,
+    "create_automation": _create_automation,
 }

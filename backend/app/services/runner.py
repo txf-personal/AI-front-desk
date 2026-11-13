@@ -70,7 +70,10 @@ def run_due(session: Session, *, start: datetime, end: datetime) -> list[Automat
         if clock is None:
             continue
         hour, minute = clock
-        for occurrence in _occurrences(window_start, window_end, hour, minute):
+        weekday = _weekday_index(job.schedule)
+        if weekday == -1:
+            continue
+        for occurrence in _occurrences(window_start, window_end, hour, minute, weekday):
             ran.extend(
                 _run_job(
                     session,
@@ -92,6 +95,8 @@ def _run_job(session, job, occurrence, *, owner_name, names, technicians, price_
         run = _reminder(session, job, occurrence, names, technicians)
     elif job.kind == AutomationKind.quote_followup:
         return _chase(session, job, occurrence, names, price_book)
+    elif job.kind == AutomationKind.quote_report:
+        run = _quote_report(session, job, occurrence, owner_name, names, price_book)
     else:
         return []
     return [] if run is None else [run]
@@ -195,6 +200,37 @@ def _chase(session, job, occurrence, names, price_book):
     return created
 
 
+def _quote_report(session, job, occurrence, owner_name, names, price_book):
+    key = f"quote-report:{occurrence.date().isoformat()}"
+    if _already_ran(session, job.id, key):
+        return None
+    quotes = session.scalars(
+        select(Appointment)
+        .where(Appointment.business_id == job.business_id, Appointment.status == AppointmentStatus.quoted)
+        .order_by(Appointment.id)
+    ).all()
+    when = _day_label(occurrence)
+    if not quotes:
+        body = f"{owner_name}, quotes still waiting on {when}: nobody is waiting."
+    else:
+        parts = []
+        for quote in quotes:
+            service = _service_name(price_book, quote.service)
+            price = f" for ${quote.quote_amount}" if quote.quote_amount is not None else ""
+            parts.append(f"{names.get(quote.customer_id, 'Customer')}, {service}{price} ({quote.summary})")
+        body = f"{owner_name}, quotes still waiting on {when}: {'; '.join(parts)}."
+    _say(session, job.business_id, None, body, occurrence)
+    return _finish(
+        session,
+        job,
+        occurrence,
+        key,
+        body,
+        "Weekly report lists quotes that are still waiting.",
+        {"date": occurrence.date().isoformat(), "quotes": len(quotes)},
+    )
+
+
 def _visits_on(session, business_id, day, names, technicians) -> list[str]:
     phrases = []
     for visit in _scheduled(session, business_id, day):
@@ -260,7 +296,8 @@ def _finish(session, job, occurrence, key, summary, reasoning, payload) -> Autom
         related_id=job.id,
     )
     job.last_run_at = occurrence
-    job.next_run_at = occurrence + timedelta(days=1)
+    step_days = 7 if _weekday_index(job.schedule) is not None else 1
+    job.next_run_at = occurrence + timedelta(days=step_days)
     return run
 
 
@@ -301,12 +338,13 @@ def _already_ran(session, automation_id: int, key: str) -> bool:
     return existing is not None
 
 
-def _occurrences(start: datetime, end: datetime, hour: int, minute: int):
+def _occurrences(start: datetime, end: datetime, hour: int, minute: int, weekday: int | None):
     candidate = start.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= start:
         candidate += timedelta(days=1)
     while candidate <= end:
-        yield candidate
+        if weekday is None or candidate.weekday() == weekday:
+            yield candidate
         candidate += timedelta(days=1)
 
 
@@ -318,6 +356,18 @@ def _clock_time(schedule: dict) -> tuple[int, int] | None:
     if not _clock_part(hour, 23) or not _clock_part(minute, 59):
         return None
     return hour, minute
+
+
+def _weekday_index(schedule: dict) -> int | None:
+    if not isinstance(schedule, dict) or "weekday" not in schedule:
+        return None
+    raw = schedule.get("weekday")
+    if not isinstance(raw, str):
+        return -1
+    try:
+        return ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday").index(raw.lower())
+    except ValueError:
+        return -1
 
 
 def _clock_part(value, limit: int) -> bool:
