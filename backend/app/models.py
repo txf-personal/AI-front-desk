@@ -1,8 +1,4 @@
-"""Shop tables.
-
-PR1 stores the business, its people, and the sample week. Later pull
-requests fill conversations, automations, and the audit log.
-"""
+"""Shop tables for the sample week, bookings, memories, and the audit log."""
 
 from datetime import datetime
 from enum import StrEnum
