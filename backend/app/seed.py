@@ -17,6 +17,9 @@ from app.clock import SHOP_TZ
 from app.models import (
     Appointment,
     AppointmentStatus,
+    Automation,
+    AutomationAuthor,
+    AutomationKind,
     Business,
     Customer,
     Memory,
@@ -157,6 +160,7 @@ def seed(session: Session) -> Business:
         for row in session.scalars(select(Technician).where(Technician.business_id == business.id))
     }
     _insert_appointments(session, business.id, customers, technicians)
+    _insert_automations(session, business.id)
     session.add(SimClock(business_id=business.id, current_time=CLOCK_START))
     session.commit()
     return business
@@ -249,3 +253,43 @@ def _insert_appointments(session, business_id, customers, technicians) -> None:
             access_notes=None,
         )
     )
+
+
+def _insert_automations(session, business_id: int) -> None:
+    specs = (
+        (
+            "Morning rundown",
+            "Each morning at 7:00, tell the owner who is booked that day.",
+            AutomationKind.morning_rundown,
+            {"hour": 7, "minute": 0},
+            datetime(2026, 11, 13, 7, 0, tzinfo=SHOP_TZ),
+        ),
+        (
+            "Day-before reminder",
+            "Each day at 17:00, remind customers who have a visit the next day.",
+            AutomationKind.appointment_reminder,
+            {"hour": 17, "minute": 0},
+            datetime(2026, 11, 12, 17, 0, tzinfo=SHOP_TZ),
+        ),
+        (
+            "Quiet quote chase",
+            "Follow up on a quote with no reply for 2 days, at most twice.",
+            AutomationKind.quote_followup,
+            {"hour": 7, "minute": 0, "quiet_days": 2, "max_sends": 2},
+            datetime(2026, 11, 13, 7, 0, tzinfo=SHOP_TZ),
+        ),
+    )
+    for name, description, kind, schedule, next_run in specs:
+        session.add(
+            Automation(
+                business_id=business_id,
+                name=name,
+                description=description,
+                kind=kind,
+                schedule=schedule,
+                enabled=True,
+                created_by=AutomationAuthor.seed,
+                next_run_at=next_run,
+                last_run_at=None,
+            )
+        )

@@ -51,7 +51,11 @@ def test_bootstrap_returns_the_shop_james_sams_quote_and_the_clock(client):
     assert body["settings"]["sunday_calls"] is True
     assert body["shop_memories"] == []
     assert len(body["technicians"]) == 4
-    assert body["automations"] == []
+    assert [(row["name"], row["kind"]) for row in body["automations"]] == [
+        ("Morning rundown", "morning_rundown"),
+        ("Day-before reminder", "appointment_reminder"),
+        ("Quiet quote chase", "quote_followup"),
+    ]
     assert body["escalations"] == []
     assert body["audits"] == []
 
@@ -132,7 +136,7 @@ def test_incomplete_caller_is_rejected(client, payload):
     assert client.get("/api/bootstrap").json()["customers"] == before
 
 
-def test_advance_to_next_morning_changes_only_the_clock(client):
+def test_advance_to_next_morning_keeps_customers_and_appointments(client):
     before = client.get("/api/bootstrap").json()
     response = client.post("/api/clock/advance", json={"to": "next_morning"})
     assert response.status_code == 200
@@ -143,7 +147,7 @@ def test_advance_to_next_morning_changes_only_the_clock(client):
     assert after["appointments"] == before["appointments"]
     assert after["customers"] == before["customers"]
     assert after["escalations"] == before["escalations"]
-    assert after["audits"] == before["audits"]
+    assert after["settings"] == before["settings"]
     assert after["automations"] == before["automations"]
 
 

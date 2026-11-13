@@ -38,7 +38,7 @@ EXPECTED_COUNTS = {
     Appointment: 3,
     Conversation: 0,
     Message: 0,
-    Automation: 0,
+    Automation: 3,
     AutomationRun: 0,
     AuditEvent: 0,
     Escalation: 0,
@@ -301,7 +301,8 @@ def test_reseed_does_not_rewind_the_clock(session):
     seed(session)
     advance_clock(session, hours=4)
     moved = read_clock(session)
+    counts = _counts(session)
     seed(session)
     assert read_clock(session) == moved
     assert moved == pt(2026, 11, 12, 20, 0)
-    assert _counts(session) == EXPECTED_COUNTS
+    assert _counts(session) == counts

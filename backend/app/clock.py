@@ -1,7 +1,7 @@
 """Simulated shop clock.
 
-Wall-clock waits are not required. Callers move this clock, and later jobs
-run whatever has come due in America/Los_Angeles.
+Wall-clock waits are not required. Moving this clock runs the shop jobs that
+came due in America/Los_Angeles.
 """
 
 import math
@@ -62,7 +62,17 @@ def set_clock(session: Session, when: datetime) -> datetime:
 
 
 def advance_clock(session: Session, *, hours: float | None = None, to: str | None = None) -> datetime:
-    return set_clock(session, advance_time(read_clock(session), hours=hours, to=to))
+    """Move the clock forward and run automations whose time was crossed."""
+    previous = read_clock(session)
+    current = advance_time(previous, hours=hours, to=to)
+    row = _clock_row(session)
+    row.current_time = current
+    session.flush()
+    from app.services.runner import run_due
+
+    run_due(session, start=previous, end=current)
+    session.commit()
+    return row.current_time.astimezone(SHOP_TZ)
 
 
 def _clock_row(session: Session) -> SimClock:
