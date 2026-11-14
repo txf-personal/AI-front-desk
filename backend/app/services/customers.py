@@ -50,6 +50,28 @@ def create_customer(
     return row
 
 
+def set_address(session: Session, *, customer_id: int, address: str, reason: str) -> Customer:
+    """Store the street address booking requires. A blank address writes nothing."""
+    text = require_text(address, "address is required")
+    reason_text = require_text(reason, "reason is required")
+    business = require_business(session)
+    customer = session.get(Customer, customer_id)
+    if customer is None or customer.business_id != business.id:
+        raise PolicyError("unknown customer")
+    customer.address = text
+    write_audit(
+        session,
+        business_id=business.id,
+        action="set_address",
+        reasoning=reason_text,
+        payload={"customer_id": customer.id, "address": text},
+        related_type="customer",
+        related_id=customer.id,
+    )
+    session.commit()
+    return customer
+
+
 def _blank_to_none(value: str | None) -> str | None:
     if value is None:
         return None

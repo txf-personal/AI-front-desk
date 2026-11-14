@@ -12,7 +12,7 @@ export function sendMessage(body: {
   return request("/api/messages", { method: "POST", body: JSON.stringify(body) })
 }
 
-export function createCustomer(body: { name: string; phone: string }): Promise<Customer> {
+export function createCustomer(body: { name: string; phone: string; address?: string }): Promise<Customer> {
   return request("/api/customers", { method: "POST", body: JSON.stringify(body) })
 }
 

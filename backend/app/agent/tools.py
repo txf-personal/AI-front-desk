@@ -10,12 +10,14 @@ from app.errors import PolicyError, require_text
 from app.models import MemoryKind
 from app.services.automations import create_quote_report
 from app.services.booking import available_slots, book_appointment, create_quote
+from app.services.customers import set_address
 from app.services.escalations import open_escalation
 from app.services.memory import remember
 from app.settings_store import set_setting
 
 CUSTOMER_TOOLS = (
     "remember_customer_fact",
+    "set_customer_address",
     "check_availability",
     "book_appointment",
     "create_quote",
@@ -54,6 +56,18 @@ def execute(
         customer_id=customer_id,
         conversation_id=conversation_id,
     )
+
+
+def _set_address(session, arguments, *, reason, customer_id, conversation_id):
+    if customer_id is None:
+        raise PolicyError("unknown customer")
+    row = set_address(
+        session,
+        customer_id=customer_id,
+        address=_arg(arguments, "address"),
+        reason=reason,
+    )
+    return {"customer_id": row.id, "address": row.address}
 
 
 def _remember_customer(session, arguments, *, reason, customer_id, conversation_id):
@@ -250,6 +264,11 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 
 _SPECS = {
+    "set_customer_address": {
+        "name": "set_customer_address",
+        "description": "Save this customer's street address so a visit can be booked.",
+        "parameters": _schema({"address": {"type": "string"}}, ["address"]),
+    },
     "remember_customer_fact": {
         "name": "remember_customer_fact",
         "description": "Save a fact about this customer. Kind is access, preference, or fact.",
@@ -333,6 +352,7 @@ _SPECS = {
 
 _HANDLERS = {
     "remember_customer_fact": _remember_customer,
+    "set_customer_address": _set_address,
     "check_availability": _check_availability,
     "book_appointment": _book,
     "create_quote": _quote,

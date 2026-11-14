@@ -25,6 +25,8 @@ from app.models import (
     Technician,
 )
 from app.seed import seed
+from app.services.booking import book_appointment
+from app.services.customers import create_customer
 from app.settings_store import get_setting, set_setting
 from tests.times import assert_wall, pt
 
@@ -110,6 +112,7 @@ def test_scripted_booking_keeps_james_address_gate_code_and_the_reason(session, 
     assert "Dog in the yard" not in context
     assert [tool["name"] for tool in fake.calls[0]["tools"]] == [
         "remember_customer_fact",
+        "set_customer_address",
         "check_availability",
         "book_appointment",
         "create_quote",
@@ -150,6 +153,7 @@ def test_customer_cannot_update_a_setting(session):
     assert _count(session, AuditEvent) == 0
     assert [tool["name"] for tool in fake.calls[0]["tools"]] == [
         "remember_customer_fact",
+        "set_customer_address",
         "check_availability",
         "book_appointment",
         "create_quote",
@@ -481,6 +485,111 @@ def test_post_message_returns_the_model_reply(session_factory, session):
     with session_factory() as other:
         stored = other.scalars(select(Message.body).order_by(Message.id)).all()
     assert stored == ["Hello", "Hello James."]
+
+
+def test_ordinary_leak_is_booked_and_gas_is_handed_over(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    fake = FakeLLM([_reply("I can book that.")])
+
+    run_turn(session, fake, audience="customer", customer_id=james.id, body="The water heater is leaking.")
+
+    instructions = fake.calls[0]["messages"][0]["content"]
+    assert "ordinary leak" in instructions
+    assert "gas" in instructions
+    assert "active leak" not in instructions
+    assert "escalate and do not book" in instructions
+
+
+def test_a_new_caller_can_save_an_address_and_be_booked(session):
+    seed(session)
+    caller = create_customer(session, name="Casey Brooks", phone="206-555-0188")
+    andre = _named(session, Technician, "Andre Williams")
+    fake = FakeLLM(
+        [
+            Completion(
+                text="",
+                tool_calls=(
+                    _call(
+                        "set_customer_address",
+                        {"address": "  9 Pike St, Seattle, WA 98115  "},
+                        "Casey gave the service address",
+                    ),
+                ),
+            ),
+            _reply("I have 9 Pike St."),
+        ]
+    )
+
+    turn = run_turn(
+        session,
+        fake,
+        audience="customer",
+        customer_id=caller.id,
+        body="The address is 9 Pike St, Seattle, WA 98115.",
+    )
+
+    session.refresh(caller)
+    assert caller.address == "9 Pike St, Seattle, WA 98115"
+    assert turn.reply == "I have 9 Pike St."
+    audit = session.scalar(select(AuditEvent).where(AuditEvent.action == "set_address"))
+    assert audit is not None
+    assert audit.reasoning == "Casey gave the service address"
+    booked = book_appointment(
+        session,
+        customer_id=caller.id,
+        service="leak",
+        start=pt(2026, 11, 13, 10, 0),
+        summary="Leak under the sink",
+        reason="Casey asked to book the leak visit",
+        technician_id=andre.id,
+        price=129,
+    )
+    assert booked.address == "9 Pike St, Seattle, WA 98115"
+    assert booked.access_notes is None
+
+
+def test_a_blank_address_is_not_saved(session):
+    seed(session)
+    caller = create_customer(session, name="Casey Brooks", phone="206-555-0188")
+    fake = FakeLLM(
+        [
+            Completion(
+                text="",
+                tool_calls=(_call("set_customer_address", {"address": "  "}, "Casey gave no street"),),
+            )
+        ]
+    )
+
+    with pytest.raises(PolicyError, match="address is required"):
+        run_turn(session, fake, audience="customer", customer_id=caller.id, body="I forgot the street.")
+
+    session.refresh(caller)
+    assert caller.address is None
+    assert session.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.action == "set_address")) == 0
+
+
+def test_the_owner_cannot_set_a_customer_address(session):
+    seed(session)
+    fake = FakeLLM(
+        [
+            Completion(
+                text="",
+                tool_calls=(
+                    _call(
+                        "set_customer_address",
+                        {"address": "9 Pike St, Seattle, WA 98115"},
+                        "Owner typed an address",
+                    ),
+                ),
+            )
+        ]
+    )
+
+    with pytest.raises(PolicyError, match="set_customer_address is not allowed"):
+        run_turn(session, fake, audience="owner", body="Casey's address is 9 Pike St.")
+
+    assert "set_customer_address" not in [tool["name"] for tool in fake.calls[0]["tools"]]
 
 
 def test_customer_message_requires_a_customer(session_factory, session):

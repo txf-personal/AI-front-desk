@@ -3,11 +3,14 @@
 import pytest
 from sqlalchemy import func, select
 
+from fastapi.testclient import TestClient
+
 from app.agent.loop import run_turn
 from app.agent.providers import FakeLLM
 from app.agent.types import Completion, ToolCall
 from app.clock import advance_clock
 from app.errors import PolicyError
+from app.main import create_app
 from app.models import Automation, AutomationAuthor, AutomationKind, Conversation, ConversationKind, Customer, Message
 from app.seed import seed
 from app.services.runner import run_due
@@ -99,6 +102,26 @@ def test_friday_report_names_sam_and_skips_booked_luis(session):
     run_due(session, start=FRIDAY_MORNING, end=pt(2026, 11, 13, 8, 0))
     session.commit()
     assert [body for body in _owner_bodies(session) if body == REPORT] == [REPORT]
+
+
+def test_a_customer_reply_drops_sam_from_the_friday_report(session, session_factory):
+    seed(session)
+    sam = _customer(session, "Sam Rivera")
+    fake = FakeLLM([Completion(text="I'll leave that quote open.", tool_calls=())])
+    with TestClient(create_app(session_factory, llm=fake)) as client:
+        response = client.post(
+            "/api/messages",
+            json={"audience": "customer", "customer_id": sam.id, "body": "I'll pass on the drain quote."},
+        )
+    assert response.status_code == 200
+
+    with session_factory() as other:
+        _ask(other, audience="owner")
+        advance_clock(other, to="next_morning")
+        assert advance_clock(other, hours=1) == pt(2026, 11, 13, 8, 0)
+        reports = [body for body in _owner_bodies(other) if body.startswith("Maria Chen, quotes still waiting")]
+
+    assert reports == ["Maria Chen, quotes still waiting on Friday, November 13: nobody is waiting."]
 
 
 def test_customer_cannot_create_an_automation(session):

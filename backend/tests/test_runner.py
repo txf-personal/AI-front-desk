@@ -1,8 +1,12 @@
 """Built-in jobs run when the clock crosses their time, and a rerun does not repeat them."""
 
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from app.agent.providers import FakeLLM
+from app.agent.types import Completion
 from app.clock import advance_clock
+from app.main import create_app
 from app.models import Appointment, AppointmentStatus, Conversation, ConversationKind, Customer, Message
 from app.seed import seed
 from app.services.runner import run_due
@@ -112,6 +116,35 @@ def test_cancelled_visit_gets_no_reminder(session):
     assert "Luis Alvarez" not in rundown[0].body
     sam = _customer(session, "Sam Rivera")
     assert len(_bodies(session, customer_id=sam.id, kind=ConversationKind.customer)) == 1
+
+
+def test_a_customer_message_stops_the_quote_chase(session, session_factory):
+    seed(session)
+    sam = _customer(session, "Sam Rivera")
+    fake = FakeLLM([Completion(text="I'll leave that quote open.", tool_calls=())])
+    with TestClient(create_app(session_factory, llm=fake)) as client:
+        response = client.post(
+            "/api/messages",
+            json={
+                "audience": "customer",
+                "customer_id": sam.id,
+                "body": "I'm still thinking about the drain quote.",
+            },
+        )
+    assert response.status_code == 200
+
+    with session_factory() as other:
+        quote = other.scalar(select(Appointment).where(Appointment.customer_id == sam.id))
+        assert quote is not None
+        assert quote.last_customer_message_at > quote.quote_sent_at
+        advance_clock(other, to="next_morning")
+        sam_bodies = [message.body for message in _bodies(other, customer_id=sam.id, kind=ConversationKind.customer)]
+        luis = _customer(other, "Luis Alvarez")
+        luis_bodies = [message.body for message in _bodies(other, customer_id=luis.id, kind=ConversationKind.customer)]
+
+    assert "I'm still thinking about the drain quote." in sam_bodies
+    assert CHASE not in sam_bodies
+    assert luis_bodies == [REMINDER]
 
 
 def test_a_reply_stops_the_quote_chase(session):

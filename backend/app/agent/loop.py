@@ -11,7 +11,7 @@ from app.agent.errors import LLMError
 from app.agent.tools import execute, tools_for
 from app.clock import read_clock
 from app.errors import PolicyError, require_text
-from app.models import Conversation, ConversationKind, Customer, Message, MessageRole
+from app.models import Appointment, AppointmentStatus, Conversation, ConversationKind, Customer, Message, MessageRole
 from app.settings_store import require_business
 
 MAX_STEPS = 4
@@ -22,7 +22,8 @@ _INSTRUCTIONS = (
     "Change the shop only through tools. "
     "Prices, hours, and openings come from that context and from tools. "
     "Every tool call includes a reason. "
-    "If someone reports gas, an active leak while they are home, or another emergency, "
+    "Book an ordinary leak, drain, or fixture visit. "
+    "If someone reports gas, a danger they are still in, or another emergency, "
     "escalate and do not book."
 )
 
@@ -54,6 +55,8 @@ def _run(session, llm, *, audience: str, body: str, customer_id: int | None) -> 
     business, thread_customer_id = _audience(session, audience, customer_id)
     conversation = _conversation(session, business.id, audience, thread_customer_id)
     _message(session, conversation.id, _speaker(audience), text)
+    if audience == "customer":
+        _note_reply(session, thread_customer_id)
     session.flush()
     tools = tools_for(audience)
     pack = build_context_pack(session, audience=audience, customer_id=thread_customer_id)
@@ -131,6 +134,19 @@ def _conversation(session: Session, business_id: int, audience: str, customer_id
     session.add(conversation)
     session.flush()
     return conversation
+
+
+def _note_reply(session: Session, customer_id: int) -> None:
+    """A customer message answers any quote already waiting. A quote opened later in this turn stays quiet."""
+    now = read_clock(session)
+    quotes = session.scalars(
+        select(Appointment).where(
+            Appointment.customer_id == customer_id,
+            Appointment.status == AppointmentStatus.quoted,
+        )
+    ).all()
+    for quote in quotes:
+        quote.last_customer_message_at = now
 
 
 def _speaker(audience: str) -> MessageRole:

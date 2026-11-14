@@ -204,11 +204,15 @@ def _quote_report(session, job, occurrence, owner_name, names, price_book):
     key = f"quote-report:{occurrence.date().isoformat()}"
     if _already_ran(session, job.id, key):
         return None
-    quotes = session.scalars(
-        select(Appointment)
-        .where(Appointment.business_id == job.business_id, Appointment.status == AppointmentStatus.quoted)
-        .order_by(Appointment.id)
-    ).all()
+    quotes = [
+        quote
+        for quote in session.scalars(
+            select(Appointment)
+            .where(Appointment.business_id == job.business_id, Appointment.status == AppointmentStatus.quoted)
+            .order_by(Appointment.id)
+        ).all()
+        if _still_waiting(quote)
+    ]
     when = _day_label(occurrence)
     if not quotes:
         body = f"{owner_name}, quotes still waiting on {when}: nobody is waiting."

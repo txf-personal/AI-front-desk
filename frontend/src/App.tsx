@@ -131,7 +131,9 @@ export function App() {
             </ul>
             <CallerForm
               busy={busy}
-              onCreate={(name, phone) => run(async () => (await createCustomer({ name, phone })).id)}
+              onCreate={(name, phone, address) =>
+                run(async () => (await createCustomer({ name, phone, ...(address ? { address } : {}) })).id)
+              }
             />
           </div>
         </section>
@@ -250,18 +252,26 @@ export function App() {
   )
 }
 
-function CallerForm({ busy, onCreate }: { busy: boolean; onCreate: (name: string, phone: string) => Promise<boolean> }) {
+function CallerForm({
+  busy,
+  onCreate,
+}: {
+  busy: boolean
+  onCreate: (name: string, phone: string, address: string) => Promise<boolean>
+}) {
   const [name, setName] = useState("")
   const [phone, setPhone] = useState("")
+  const [address, setAddress] = useState("")
 
   async function submit(event: FormEvent) {
     event.preventDefault()
     const nextName = name.trim()
     const nextPhone = phone.trim()
     if (!nextName || !nextPhone) return
-    if (await onCreate(nextName, nextPhone)) {
+    if (await onCreate(nextName, nextPhone, address.trim())) {
       setName("")
       setPhone("")
+      setAddress("")
     }
   }
 
@@ -274,6 +284,10 @@ function CallerForm({ busy, onCreate }: { busy: boolean; onCreate: (name: string
       <label>
         Phone
         <input value={phone} onChange={(event) => setPhone(event.target.value)} />
+      </label>
+      <label>
+        Address
+        <input value={address} onChange={(event) => setAddress(event.target.value)} />
       </label>
       <button type="submit" disabled={busy}>Add caller</button>
     </form>

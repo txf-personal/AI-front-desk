@@ -169,6 +169,21 @@ test("the new-caller form creates a customer", async () => {
   })
 })
 
+test("the new-caller form sends a trimmed address", async () => {
+  const user = userEvent.setup()
+  render(<App />)
+  await screen.findByRole("button", { name: "James Okonkwo" })
+  await user.type(screen.getByLabelText("Name"), "Casey Brooks")
+  await user.type(screen.getByLabelText("Phone"), "206-555-0188")
+  await user.type(screen.getByLabelText("Address"), "  9 Pike St, Seattle, WA 98115  ")
+  await user.click(screen.getByRole("button", { name: "Add caller" }))
+  await waitFor(() => {
+    expect(posted("/api/customers")).toEqual([
+      { name: "Casey Brooks", phone: "206-555-0188", address: "9 Pike St, Seattle, WA 98115" },
+    ])
+  })
+})
+
 test("the owner composer calls the owner audience", async () => {
   const user = userEvent.setup()
   render(<App />)
