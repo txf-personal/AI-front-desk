@@ -200,6 +200,7 @@ button[type="submit"], .clock button, .card button {
 .status[data-status="completed"], .status[data-status="resolved"] { background: #e7eef8; color: #2c4a73; }
 .status[data-status="cancelled"], .status[data-status="open"], .status[data-status="off"] { background: #f8e7e4; color: #8a2b24; }
 .action { font-weight: 650; }
+.inputs { display: block; margin-top: 2px; color: #6f655c; overflow-wrap: anywhere; }
 .who { font-weight: 650; }
 
 @media (max-width: 800px) {

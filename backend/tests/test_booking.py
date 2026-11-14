@@ -439,6 +439,66 @@ def test_naive_start_is_rejected(session):
     assert _count(session, Appointment) == before
 
 
+def test_booking_outside_the_service_area_writes_nothing(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "900 Bellevue Way, Bellevue, WA 98004"
+    session.commit()
+    before = _count(session, Appointment)
+
+    with pytest.raises(PolicyError, match="address is outside the service area"):
+        _book(session)
+
+    assert james.address == "900 Bellevue Way, Bellevue, WA 98004"
+    assert _count(session, Appointment) == before
+    assert _audits(session, "book_appointment") == []
+
+
+def test_a_quote_outside_the_service_area_writes_nothing(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "900 Bellevue Way, Bellevue, WA 98004"
+    session.commit()
+    before = _count(session, Appointment)
+
+    with pytest.raises(PolicyError, match="address is outside the service area"):
+        create_quote(
+            session,
+            customer_id=james.id,
+            service="leak",
+            summary="Leak outside the area",
+            reason="Customer asked for a price",
+            price=129,
+        )
+
+    assert _count(session, Appointment) == before
+    assert _audits(session, "create_quote") == []
+
+
+def test_an_address_without_a_zip_is_outside_the_service_area(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "1842 N 92nd St, Seattle"
+    session.commit()
+    before = _count(session, Appointment)
+
+    with pytest.raises(PolicyError, match="address is outside the service area"):
+        _book(session)
+
+    assert _count(session, Appointment) == before
+
+
+def test_a_zip_plus_four_inside_the_area_can_be_booked(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "1842 N 92nd St, Seattle, WA 98115-1234"
+    session.commit()
+
+    booked = _book(session)
+
+    assert booked.address == "1842 N 92nd St, Seattle, WA 98115-1234"
+
+
 def test_customer_without_an_address_cannot_be_booked(session):
     seed(session)
     business_id = _named(session, Customer, "James Okonkwo").business_id

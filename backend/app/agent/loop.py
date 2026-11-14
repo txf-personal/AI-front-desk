@@ -1,7 +1,9 @@
 """One front-desk turn. The model chooses a tool; the shop applies it."""
 
 import json
+import re
 from dataclasses import dataclass
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +17,7 @@ from app.models import Appointment, AppointmentStatus, Conversation, Conversatio
 from app.settings_store import require_business
 
 MAX_STEPS = 4
+_GAS = re.compile(r"\bgas\b", re.IGNORECASE)
 
 _INSTRUCTIONS = (
     "You are the front desk for this plumbing shop. "
@@ -90,6 +93,12 @@ def _run(session, llm, *, audience: str, body: str, customer_id: int | None) -> 
             }
         )
         for call in completion.tool_calls:
+            if (
+                audience == "customer"
+                and call.name == "book_appointment"
+                and _mentions_gas(text, call.reason, call.arguments)
+            ):
+                raise PolicyError("gas is handed to the owner")
             result = execute(
                 session,
                 call,
@@ -136,8 +145,16 @@ def _conversation(session: Session, business_id: int, audience: str, customer_id
     return conversation
 
 
+def _mentions_gas(text: str, reason: str, arguments: dict) -> bool:
+    blob = f"{text}\n{reason}\n{json.dumps(arguments)}"
+    return _GAS.search(blob) is not None
+
+
 def _note_reply(session: Session, customer_id: int) -> None:
-    """A customer message answers any quote already waiting. A quote opened later in this turn stays quiet."""
+    """A customer message answers quotes that are already waiting.
+
+    The clock can stay still between turns, so a reply at the same reading is stored one second later. A quote opened after this stamp keeps the clock time and stays waiting.
+    """
     now = read_clock(session)
     quotes = session.scalars(
         select(Appointment).where(
@@ -146,7 +163,8 @@ def _note_reply(session: Session, customer_id: int) -> None:
         )
     ).all()
     for quote in quotes:
-        quote.last_customer_message_at = now
+        sent = quote.quote_sent_at
+        quote.last_customer_message_at = sent + timedelta(seconds=1) if sent is not None and now == sent else now
 
 
 def _speaker(audience: str) -> MessageRole:

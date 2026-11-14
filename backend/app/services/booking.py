@@ -1,5 +1,6 @@
 """Schedule a visit or record a quote. Rules run before any insert."""
 
+import re
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import select
@@ -20,6 +21,7 @@ from app.settings_store import get_setting
 
 _DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 _BLOCKING = (AppointmentStatus.scheduled, AppointmentStatus.completed)
+_ZIP = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
 
 def book_appointment(
@@ -130,9 +132,17 @@ def _subject(session, customer_id, service, summary, reason, price, *, price_req
     customer = _customer(session, customer_id)
     if not customer.address:
         raise PolicyError("customer has no address")
+    _check_service_area(session, customer.address)
     spec = _service_spec(session, service)
     _check_price(spec, price, required=price_required)
     return customer, spec, summary_text, reason_text
+
+
+def _check_service_area(session: Session, address: str) -> None:
+    found = _ZIP.findall(address)
+    area = set(get_setting(session, "service_area"))
+    if not found or found[-1] not in area:
+        raise PolicyError("address is outside the service area")
 
 
 def _aware(start: datetime) -> datetime:

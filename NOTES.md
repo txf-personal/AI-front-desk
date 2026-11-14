@@ -4,13 +4,13 @@
 
 One shop, Northside Plumbing, in America/Los_Angeles. The clock starts Thursday, November 12, 2026, at 4:00 PM, and only moves when someone advances it. There is no login. The page is the demo.
 
-The model decides and drafts. The shop owns state. A booking copies the address and the active access notes, checks hours and skills, and writes an audit row with the model's reason. A quote with no book price writes nothing. Customer facts stay on that customer. Shop policies are visible to both the customer and the owner. A message row is the delivery. There is no SMS, email, or calendar provider.
+The model decides and drafts. The shop owns state. A booking copies the address and the active access notes, checks hours, skills, and the service-area zip, and writes an audit row with the model's reason. The activity list shows that action, the reason, and the saved inputs. A visit or a quote outside the service area writes nothing. If the turn mentions gas, the shop refuses the booking. A quote with no book price writes nothing. Customer facts stay on that customer. Shop policies are visible to both the customer and the owner. A message row is the delivery. There is no SMS, email, or calendar provider.
 
 Sunday calls start on. When they are on and Sunday hours are empty, Sunday uses Monday's 8:00–5:00 window.
 
 ## Cuts
 
-No accounts, no real channels, no multi-shop screen, no vector search, no conversation summaries, no travel time, no payments, and no websockets. `business_id` is on the rows so a second shop has a place to go. This demo loads one.
+No accounts, no real channels, no multi-shop screen, no vector search, no conversation summaries, no travel time, no payments, and no websockets. The only job the owner can create is the weekly quote report. Arbitrary schedules were cut. `business_id` is on the rows so a second shop has a place to go. This demo loads one.
 
 ## Another week
 

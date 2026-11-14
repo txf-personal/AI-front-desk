@@ -183,13 +183,17 @@ export function App() {
               {shop.audits.length === 0 ? <p className="empty">No activity yet.</p> : (
                 <ScrollBox className="log" watch={shop.audits.map((audit) => audit.id).join()}>
                   <ul className="stack">
-                    {shop.audits.map((audit) => (
-                      <li key={audit.id}>
-                        <span className="action">{audit.action}</span>
-                        {": "}
-                        {audit.reasoning}
-                      </li>
-                    ))}
+                    {shop.audits.map((audit) => {
+                      const inputs = inputText(audit.payload)
+                      return (
+                        <li key={audit.id}>
+                          <span className="action">{audit.action}</span>
+                          {": "}
+                          {audit.reasoning}
+                          {inputs ? <span className="inputs">{inputs}</span> : null}
+                        </li>
+                      )
+                    })}
                   </ul>
                 </ScrollBox>
               )}
@@ -393,6 +397,17 @@ function formatWhen(value: string | null): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(parsed)
+}
+
+function inputText(payload: Shop["audits"][number]["payload"]): string {
+  if (payload == null) return ""
+  if (Array.isArray(payload)) return JSON.stringify(payload)
+  return Object.entries(payload)
+    .map(([key, value]) => {
+      const shown = value != null && typeof value === "object" ? JSON.stringify(value) : String(value)
+      return `${key} ${shown}`
+    })
+    .join(" · ")
 }
 
 function messageOf(err: unknown): string {

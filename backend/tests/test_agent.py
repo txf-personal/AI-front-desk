@@ -1,6 +1,7 @@
 """One conversation turn, with a scripted model and no network."""
 
 import json
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,7 +26,7 @@ from app.models import (
     Technician,
 )
 from app.seed import seed
-from app.services.booking import book_appointment
+from app.services.booking import book_appointment, create_quote
 from app.services.customers import create_customer
 from app.settings_store import get_setting, set_setting
 from tests.times import assert_wall, pt
@@ -197,6 +198,46 @@ def test_gas_smell_escalates_and_does_not_book(session):
     assert turn.reply == "Please leave the house. I'm getting the owner."
 
 
+@pytest.mark.parametrize(
+    ("body", "summary"),
+    [
+        ("I smell gas and I am still home.", "Water heater is leaking"),
+        ("Please come look at the water heater.", "Gas odor at the water heater"),
+    ],
+)
+def test_the_shop_refuses_a_gas_booking(session, body, summary):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    andre = _named(session, Technician, "Andre Williams")
+    before = _count(session, Appointment)
+    fake = FakeLLM(
+        [
+            Completion(
+                text="",
+                tool_calls=(
+                    _call(
+                        "book_appointment",
+                        {
+                            "service": "leak",
+                            "start": "2026-11-13T13:00:00-08:00",
+                            "summary": summary,
+                            "technician_id": andre.id,
+                        },
+                        "Customer asked for a visit",
+                    ),
+                ),
+            )
+        ]
+    )
+
+    with pytest.raises(PolicyError, match="gas is handed to the owner"):
+        run_turn(session, fake, audience="customer", customer_id=james.id, body=body)
+
+    assert _count(session, Appointment) == before
+    assert _count(session, Message) == 0
+    assert session.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.action == "book_appointment")) == 0
+
+
 def test_sunday_book_returns_the_shop_error_and_writes_nothing(session_factory, session):
     seed(session)
     james = _named(session, Customer, "James Okonkwo")
@@ -318,6 +359,27 @@ def test_quote_uses_the_book_price_and_does_not_hold_a_slot(session):
     assert quote.start is None
     assert quote.technician_id is None
     assert quote.address == james.address
+    assert quote.last_customer_message_at == quote.quote_sent_at
+
+
+def test_a_reply_at_the_same_clock_answers_the_quote(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    quote = create_quote(
+        session,
+        customer_id=james.id,
+        service="faucet",
+        summary="Kitchen faucet",
+        reason="James asked for the faucet price",
+        price=119,
+    )
+    assert quote.last_customer_message_at == quote.quote_sent_at
+    fake = FakeLLM([_reply("I'll leave that quote open.")])
+
+    run_turn(session, fake, audience="customer", customer_id=james.id, body="I'll pass on the faucet quote.")
+
+    session.refresh(quote)
+    assert quote.last_customer_message_at == quote.quote_sent_at + timedelta(seconds=1)
 
 
 def test_off_book_quote_writes_nothing(session):

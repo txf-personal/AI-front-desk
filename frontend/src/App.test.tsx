@@ -67,6 +67,7 @@ const shop: Shop = {
       actor: "system",
       action: "book_appointment",
       reasoning: "James asked to book the leak visit",
+      payload: { service: "leak", technician_id: 4 },
       created_at: "2026-11-12T16:00:00-08:00",
     },
   ],
@@ -204,14 +205,13 @@ test("clock controls advance to morning, four hours, and one day", async () => {
   await clickClock(user, "One day", [{ to: "next_morning" }, { hours: 4 }, { to: "next_day" }])
 })
 
-test("an activity row shows the action and the reason", async () => {
+test("an activity row shows the action, the reason, and the inputs", async () => {
   render(<App />)
-  expect(
-    await screen.findByText(
-      (_, element) =>
-        element?.tagName === "LI" && element.textContent === "book_appointment: James asked to book the leak visit",
-    ),
-  ).toBeInTheDocument()
+  const row = await screen.findByText(
+    (_, element) => element?.tagName === "LI" && (element.textContent?.includes("book_appointment:") ?? false),
+  )
+  expect(row).toHaveTextContent("book_appointment: James asked to book the leak visit")
+  expect(row).toHaveTextContent("service leak · technician_id 4")
 })
 
 test("a blank message is not sent", async () => {

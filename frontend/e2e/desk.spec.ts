@@ -116,7 +116,7 @@ test("an owner policy stays off the customer thread", async ({ page }) => {
   await expect(maria).toContainText("Sunday calls are off. I'll remember that.")
   await expect(page.getByText("Sunday calls: off")).toBeVisible()
   await expect(maria.locator(".bubble", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)
-  await expect(maria.locator("li", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)
+  await expect(policies(maria)).toHaveText("We stopped doing Sunday calls")
   await expect(desk.getByText("We stopped doing Sunday calls")).toHaveCount(0)
   await expect(maria).toContainText("set_setting: Owner said Sunday calls are over")
   await expect(maria).toContainText("remember: Owner said Sunday calls are over")
@@ -207,7 +207,7 @@ test("a later note does not book a second visit or add another policy", async ({
   await send(maria, "Thanks")
   await expect(maria).toContainText("I can take a booking, a quote, or a note for Maria.")
   await expect(maria.locator(".bubble", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)
-  await expect(maria.locator("li", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)
+  await expect(policies(maria)).toHaveText("We stopped doing Sunday calls")
 })
 
 function customer(page: Page): Locator {
@@ -216,6 +216,10 @@ function customer(page: Page): Locator {
 
 function owner(page: Page): Locator {
   return page.getByRole("region", { name: "Owner" })
+}
+
+function policies(region: Locator): Locator {
+  return region.locator("section.card", { hasText: "Policies" }).locator("li")
 }
 
 function scheduled(region: Locator, name: string, service: string): Locator {

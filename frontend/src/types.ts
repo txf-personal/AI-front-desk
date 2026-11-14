@@ -48,6 +48,7 @@ export type Audit = {
   actor: string
   action: string
   reasoning: string
+  payload: Record<string, unknown> | unknown[] | null
   created_at: string
 }
 
