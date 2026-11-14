@@ -113,6 +113,7 @@ test("an owner policy stays off the customer thread", async ({ page }) => {
   const desk = customer(page)
   const maria = owner(page)
   await send(maria, "We stopped doing Sunday calls")
+  await expect(maria).toContainText("Sunday calls are off. I'll remember that.")
   await expect(page.getByText("Sunday calls: off")).toBeVisible()
   await expect(maria.locator(".bubble", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)
   await expect(maria.locator("li", { hasText: "We stopped doing Sunday calls" })).toHaveCount(1)

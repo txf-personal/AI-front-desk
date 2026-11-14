@@ -20,10 +20,9 @@ def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
 
 def create_sqlite_engine(url: str = "sqlite://"):
     """Open SQLite. In-memory URLs share one connection so a second session sees commits."""
-    kwargs = {}
+    kwargs = {"connect_args": {"check_same_thread": False}}
     if url in _MEMORY_URLS or url.startswith("sqlite:///:memory:"):
         kwargs["poolclass"] = StaticPool
-        kwargs["connect_args"] = {"check_same_thread": False}
     return create_engine(url, **kwargs)
 
 

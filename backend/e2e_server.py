@@ -61,7 +61,7 @@ class DeskLLM:
         return Completion(_FALLBACK, ())
 
     def _after(self, messages: list[dict]) -> Completion:
-        payloads = [_payload(message) for message in messages if message.get("role") == "tool"]
+        payloads = _turn_payloads(messages)
         if any("slots" in item for item in payloads) and not any(item.get("status") == "scheduled" for item in payloads):
             slots = next(item["slots"] for item in payloads if "slots" in item)
             slot = next(
@@ -96,6 +96,19 @@ class DeskLLM:
 
 def _call(name: str, arguments: dict, reason: str) -> Completion:
     return Completion("", (ToolCall("call-1", name, arguments, reason),))
+
+
+def _turn_payloads(messages: list[dict]) -> list[dict]:
+    """Tool results from the current user message only."""
+    payloads = []
+    for message in reversed(messages):
+        role = message.get("role")
+        if role == "user":
+            break
+        if role == "tool":
+            payloads.append(_payload(message))
+    payloads.reverse()
+    return payloads
 
 
 def _payload(message: dict) -> dict:
