@@ -16,8 +16,15 @@ export function createCustomer(body: { name: string; phone: string; address?: st
   return request("/api/customers", { method: "POST", body: JSON.stringify(body) })
 }
 
+export function updateCustomer(
+  id: number,
+  body: { phone: string; address: string | null },
+): Promise<Customer> {
+  return request(`/api/customers/${id}`, { method: "PATCH", body: JSON.stringify(body) })
+}
+
 export function advanceClock(
-  body: { hours: number } | { to: "next_morning" | "next_day" },
+  body: { hours: number } | { to: "next_morning" | "next_day" } | { until: string },
 ): Promise<{ clock: string }> {
   return request("/api/clock/advance", { method: "POST", body: JSON.stringify(body) })
 }

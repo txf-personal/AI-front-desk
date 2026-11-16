@@ -90,7 +90,11 @@ def test_demo_story_books_james_then_runs_the_morning_jobs(session_factory, sess
 
     booked = client.post(
         "/api/messages",
-        json={"audience": "customer", "customer_id": james["id"], "body": "Please book the leak for Friday at 10."},
+        json={
+            "audience": "customer",
+            "customer_id": james["id"],
+            "body": "Please book the leak for Friday at 10 with Andre Williams.",
+        },
     )
     assert booked.status_code == 200
     assert "gate code 4481" in booked.json()["reply"]

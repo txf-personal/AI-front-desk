@@ -1,5 +1,6 @@
 """Tools the model may call. The audience decides which names run."""
 
+import re
 from datetime import date, datetime
 
 from sqlalchemy.orm import Session
@@ -8,13 +9,14 @@ from app.agent.types import ToolCall
 from app.clock import shop_iso
 from app.errors import PolicyError, require_text
 from app.models import MemoryKind
-from app.services.automations import create_quote_report
-from app.services.booking import available_slots, book_appointment, create_quote
+from app.services.automations import create_quote_report, create_visit_reminder, parse_daily_reminder
+from app.services.booking import available_slots, book_appointment, cancel_visits_on_closed_day, create_quote
 from app.services.customers import set_address
 from app.services.escalations import open_escalation
-from app.services.memory import remember
-from app.settings_store import set_setting
+from app.services.memory import active_memories, remember
+from app.settings_store import merge_hours, set_setting, set_weekday, weekday_of
 
+_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 CUSTOMER_TOOLS = (
     "remember_customer_fact",
     "set_customer_address",
@@ -87,13 +89,78 @@ def _remember_customer(session, arguments, *, reason, customer_id, conversation_
 def _check_availability(session, arguments, *, reason, customer_id, conversation_id):
     if customer_id is None:
         raise PolicyError("unknown customer")
-    slots = available_slots(
-        session,
-        customer_id=customer_id,
-        service=require_text(_arg(arguments, "service"), "service is required"),
-        day=_day(arguments.get("day")),
-    )
-    return {"slots": slots}
+    day = _day(arguments.get("day"))
+    try:
+        slots = available_slots(
+            session,
+            customer_id=customer_id,
+            service=require_text(_arg(arguments, "service"), "service is required"),
+            day=day,
+        )
+    except PolicyError as exc:
+        if str(exc) in {"sunday calls are off", "outside business hours"}:
+            return {"closed": True, "weekday": _DAYS[day.weekday()], "slots": []}
+        raise
+    return {"closed": False, "slots": slots}
+
+
+_MORNING = re.compile(r"\bmorning\b|上午", re.IGNORECASE)
+_AFTERNOON = re.compile(r"\bafternoon\b|下午", re.IGNORECASE)
+_EVENING = re.compile(r"\bevening\b|晚上", re.IGNORECASE)
+_PERIODS = (
+    ("morning", _MORNING, "Customer prefers morning appointments. These slots start before noon."),
+    ("afternoon", _AFTERNOON, "Customer prefers afternoon appointments. These slots start at noon or later."),
+    ("evening", _EVENING, "Customer prefers evening appointments. These slots start at 5:00 PM or later."),
+)
+
+
+def narrow_to_preference(session: Session, customer_id: int | None, text: str, result: dict) -> dict:
+    """Keep the part of the day the customer prefers, unless this message asks for another."""
+    if customer_id is None or not isinstance(result, dict) or result.get("closed"):
+        return result
+    slots = result.get("slots")
+    if not isinstance(slots, list) or not slots:
+        return result
+    period = _period_named(text) or _saved_period(session, customer_id)
+    if period is None:
+        return result
+    kept = [slot for slot in slots if _slot_period(slot) == period]
+    if not kept:
+        return result
+    note = next(sentence for name, _pattern, sentence in _PERIODS if name == period)
+    if _period_named(text):
+        note = f"The customer asked for {period} slots."
+    return {**result, "slots": kept, "preference": period, "note": note}
+
+
+def _saved_period(session: Session, customer_id: int) -> str | None:
+    texts = [
+        row.content
+        for row in active_memories(session, customer_id)
+        if row.kind == MemoryKind.preference
+    ]
+    return _period_named("\n".join(texts))
+
+
+def _period_named(text: str) -> str | None:
+    found = [name for name, pattern, _sentence in _PERIODS if pattern.search(text)]
+    if len(found) == 1:
+        return found[0]
+    return None
+
+
+def _slot_period(slot: object) -> str | None:
+    if not isinstance(slot, dict) or not isinstance(slot.get("start"), str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(slot["start"])
+    except ValueError:
+        return None
+    if parsed.hour < 12:
+        return "morning"
+    if parsed.hour < 17:
+        return "afternoon"
+    return "evening"
 
 
 def _book(session, arguments, *, reason, customer_id, conversation_id):
@@ -158,16 +225,51 @@ def _update_setting(session, arguments, *, reason, customer_id, conversation_id)
     if "value" not in arguments:
         raise PolicyError("value is required")
     value = arguments["value"]
+    day = weekday_of(key)
+    if day is not None:
+        span = set_weekday(session, day, value, reason=reason)
+        cancelled = cancel_visits_on_closed_day(session, day) if span is None else []
+        return {"key": f"hours.{day}", "value": span, "cancelled": cancelled}
+    if key == "hours":
+        if not isinstance(value, dict):
+            raise PolicyError("hours must be a start and end")
+        stored = merge_hours(session, value, reason=reason)
+        cancelled = []
+        for name, span in stored.items():
+            if name in value and span is None:
+                cancelled.extend(cancel_visits_on_closed_day(session, name))
+        return {"key": key, "value": stored, "cancelled": cancelled}
     if key == "sunday_calls" and not isinstance(value, bool):
         raise PolicyError("sunday_calls must be true or false")
     try:
         stored = set_setting(session, key, value, reason=reason)
     except KeyError as exc:
         raise PolicyError("unknown setting") from exc
-    return {"key": key, "value": stored}
+    cancelled = cancel_visits_on_closed_day(session, "sunday") if key == "sunday_calls" and value is False else []
+    return {"key": key, "value": stored, "cancelled": cancelled}
 
 
 def _create_automation(session, arguments, *, reason, customer_id, conversation_id):
+    instruction = _arg(arguments, "instruction")
+    reminder = parse_daily_reminder(instruction)
+    if reminder is not None:
+        hour, minute, day_offset = reminder
+        row, _created = create_visit_reminder(
+            session,
+            instruction=instruction,
+            hour=hour,
+            minute=minute,
+            day_offset=day_offset,
+            reason=reason,
+            conversation_id=conversation_id,
+        )
+        return {
+            "automation_id": row.id,
+            "name": row.name,
+            "hour": row.schedule["hour"],
+            "minute": row.schedule["minute"],
+            "day_offset": row.schedule["day_offset"],
+        }
     row = create_quote_report(
         session,
         instruction=_arg(arguments, "instruction"),
@@ -282,7 +384,11 @@ _SPECS = {
     },
     "check_availability": {
         "name": "check_availability",
-        "description": "List open slots for one service on a shop day, YYYY-MM-DD.",
+        "description": (
+            "List open slots for one service on a shop day, YYYY-MM-DD. "
+            "A closed day returns closed true and no slots. "
+            "A customer preference such as morning keeps only that part of the day."
+        ),
         "parameters": _schema(
             {"service": {"type": "string"}, "day": {"type": "string"}},
             ["service", "day"],
@@ -290,7 +396,10 @@ _SPECS = {
     },
     "book_appointment": {
         "name": "book_appointment",
-        "description": "Book a visit inside shop hours. Price is optional and must match the book.",
+        "description": (
+            "Book a visit inside shop hours after the customer has named a time and a technician. "
+            "Price is optional and must match the book."
+        ),
         "parameters": _schema(
             {
                 "service": {"type": "string"},
@@ -321,7 +430,13 @@ _SPECS = {
     },
     "update_setting": {
         "name": "update_setting",
-        "description": "Change an existing shop setting. sunday_calls is true or false.",
+        "description": (
+            "Change an existing shop setting. sunday_calls is true or false. "
+            "hours.<weekday> changes one day: null closes it, true opens 8:00 AM to 5:00 PM. "
+            "Other hours are not supported. "
+            "To add a service-area zip, call remember_policy with the owner's sentence. "
+            "Do not say you cannot change the service area."
+        ),
         "parameters": _schema(
             {"key": {"type": "string"}, "value": {}},
             ["key", "value"],
@@ -334,7 +449,11 @@ _SPECS = {
     },
     "create_automation": {
         "name": "create_automation",
-        "description": "Save a weekly report of quotes that are still waiting. The default time is 7:30.",
+        "description": (
+            "Save a weekly report of quotes that are still waiting, or a daily customer visit reminder. "
+            "A reminder instruction names every day, a clock time, customers, and today or tomorrow. "
+            "The default report time is 7:30."
+        ),
         "parameters": _schema(
             {
                 "instruction": {"type": "string"},

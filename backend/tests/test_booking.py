@@ -5,6 +5,7 @@ from datetime import date, datetime
 import pytest
 from sqlalchemy import func, select
 
+from app.clock import set_clock
 from app.errors import PolicyError
 from app.models import (
     Appointment,
@@ -18,7 +19,8 @@ from app.models import (
 )
 from app.seed import seed
 from app.services.booking import available_slots, book_appointment, create_quote
-from app.settings_store import set_setting
+from app.services.memory import remember
+from app.settings_store import set_setting, set_weekday
 from tests.times import assert_wall, pt
 
 CLOCK = pt(2026, 11, 12, 16, 0)
@@ -165,6 +167,24 @@ def test_sunday_is_rejected_until_calls_are_enabled(session):
     assert_wall(booked.end, pt(2026, 11, 15, 11, 0))
 
 
+def test_a_closed_saturday_cannot_be_booked(session):
+    seed(session)
+    brooke = _named(session, Technician, "Brooke Hale")
+    set_weekday(session, "hours.saturday", None, reason="Saturday is closed")
+
+    with pytest.raises(PolicyError, match="outside business hours"):
+        _book(
+            session,
+            service="drain",
+            start=pt(2026, 11, 14, 10, 0),
+            summary="Saturday drain",
+            technician_id=brooke.id,
+        )
+
+    booked = _book(session)
+    assert booked.service == "leak"
+
+
 @pytest.mark.parametrize(("hour", "minute", "tech_name"), [(7, 59, "Dana Okada"), (16, 1, "Brooke Hale")])
 def test_outside_business_hours_is_rejected(session, hour, minute, tech_name):
     seed(session)
@@ -227,12 +247,17 @@ def test_adjacent_slot_is_free(session):
 def test_completed_visit_still_blocks_that_technician(session):
     seed(session)
     chris = _named(session, Technician, "Chris Patel")
+    elena = _named(session, Customer, "Elena Vasquez")
+    visit = session.scalar(select(Appointment).where(Appointment.customer_id == elena.id))
+    visit.start = pt(*FRIDAY, 10, 0)
+    visit.end = pt(*FRIDAY, 11, 0)
+    session.commit()
     before = _count(session, Appointment)
     with pytest.raises(PolicyError, match="technician is already booked"):
         _book(
             session,
             service="faucet",
-            start=pt(2026, 11, 4, 10, 0),
+            start=pt(*FRIDAY, 10, 0),
             summary="Same slot as Elena",
             technician_id=chris.id,
         )
@@ -409,6 +434,49 @@ def test_quote_at_the_book_price_copies_address_and_does_not_hold_a_slot(session
         technician_id=andre.id,
     )
     assert booked.status == AppointmentStatus.scheduled
+    assert booked.id != quote.id
+    session.refresh(quote)
+    assert quote.status == AppointmentStatus.quoted
+
+
+def test_booking_the_quoted_service_keeps_that_one_row(session):
+    seed(session)
+    sam = _named(session, Customer, "Sam Rivera")
+    brooke = _named(session, Technician, "Brooke Hale")
+    quote = session.scalar(
+        select(Appointment).where(
+            Appointment.customer_id == sam.id,
+            Appointment.status == AppointmentStatus.quoted,
+        )
+    )
+    before = _count(session, Appointment)
+
+    booked = book_appointment(
+        session,
+        customer_id=sam.id,
+        service="drain",
+        start=pt(2026, 11, 14, 15, 0),
+        summary="Kitchen sink draining slowly",
+        reason="Sam booked the drain quote",
+        technician_id=brooke.id,
+        price=149,
+    )
+
+    assert booked.id == quote.id
+    assert booked.status == AppointmentStatus.scheduled
+    assert booked.quote_amount == 149
+    assert booked.quote_sent_at is not None
+    assert_wall(booked.start, pt(2026, 11, 14, 15, 0))
+    assert _count(session, Appointment) == before
+    still_quoted = session.scalar(
+        select(func.count())
+        .select_from(Appointment)
+        .where(
+            Appointment.customer_id == sam.id,
+            Appointment.status == AppointmentStatus.quoted,
+        )
+    )
+    assert still_quoted == 0
 
 
 @pytest.mark.parametrize(
@@ -429,6 +497,19 @@ def test_rejected_booking_writes_nothing(session, overrides, message):
         _book(session, **overrides)
     assert _count(session, Appointment) == before_jobs
     assert _count(session, AuditEvent) == before_audits
+
+
+def test_a_start_before_the_clock_is_refused(session):
+    seed(session)
+    set_clock(session, pt(2026, 11, 13, 11, 0))
+    before = _count(session, Appointment)
+
+    with pytest.raises(PolicyError, match="that time has already passed"):
+        _book(session, start=pt(2026, 11, 13, 10, 0))
+
+    assert _count(session, Appointment) == before
+    booked = _book(session, start=pt(2026, 11, 13, 13, 0))
+    assert_wall(booked.start, pt(2026, 11, 13, 13, 0))
 
 
 def test_naive_start_is_rejected(session):
@@ -473,6 +554,23 @@ def test_a_quote_outside_the_service_area_writes_nothing(session):
 
     assert _count(session, Appointment) == before
     assert _audits(session, "create_quote") == []
+
+
+def test_a_service_area_policy_adds_that_zip(session):
+    seed(session)
+    remember(
+        session,
+        content="Add service area 98104 is now allowed.",
+        kind=MemoryKind.policy,
+        reason="Owner added 98104",
+    )
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "100 Yesler Way, Seattle, WA 98104"
+    session.commit()
+
+    booked = _book(session)
+
+    assert booked.address == "100 Yesler Way, Seattle, WA 98104"
 
 
 def test_an_address_without_a_zip_is_outside_the_service_area(session):
@@ -525,6 +623,16 @@ def test_customer_without_an_address_cannot_be_booked(session):
             technician_id=andre.id,
         )
     assert _count(session, Appointment) == before
+
+
+def test_availability_outside_the_service_area_lists_nothing(session):
+    seed(session)
+    james = _named(session, Customer, "James Okonkwo")
+    james.address = "900 Bellevue Way, Bellevue, WA 98004"
+    session.commit()
+
+    with pytest.raises(PolicyError, match="address is outside the service area"):
+        available_slots(session, customer_id=james.id, service="leak", day=date(2026, 11, 16))
 
 
 def test_availability_skips_a_booked_technician_and_keeps_the_next_slot(session):

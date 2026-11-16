@@ -3,6 +3,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.agent.hours_text import agree_with_hours
 from app.clock import read_clock, shop_iso
 from app.errors import PolicyError
 from app.models import (
@@ -11,11 +12,13 @@ from app.models import (
     Conversation,
     ConversationKind,
     Customer,
+    MemoryKind,
     Message,
+    MessageRole,
     Technician,
 )
 from app.services.memory import active_memories, business_memories
-from app.settings_store import all_settings, require_business
+from app.settings_store import all_settings, effective_hours, effective_service_area, require_business
 
 MESSAGE_LIMIT = 30
 
@@ -24,6 +27,8 @@ def build_context_pack(session: Session, *, audience: str, customer_id: int | No
     if audience not in {"customer", "owner"}:
         raise PolicyError("unknown audience")
     business = require_business(session)
+    memories = business_memories(session)
+    settings = _settings_for_model(all_settings(session, business.id), memories)
     pack = {
         "audience": audience,
         "now": shop_iso(read_clock(session)),
@@ -33,8 +38,10 @@ def build_context_pack(session: Session, *, audience: str, customer_id: int | No
             "timezone": business.timezone,
             "phone": business.phone,
         },
-        "settings": all_settings(session, business.id),
-        "shop_memories": _visible(business_memories(session)),
+        "settings": settings,
+        "closed_days": _closed_days(settings),
+        "shop_memories": _visible(memories),
+        "technicians": _technicians(session, business.id),
     }
     if audience == "owner":
         pack["open_quotes"] = _open_quotes(session, business.id)
@@ -59,6 +66,35 @@ def build_context_pack(session: Session, *, audience: str, customer_id: int | No
         session, business.id, customer_id=customer.id, kind=ConversationKind.customer
     )
     return pack
+
+
+def _settings_for_model(settings: dict, memories) -> dict:
+    shown = dict(settings)
+    hours = settings.get("hours")
+    if isinstance(hours, dict):
+        shown["hours"] = effective_hours(hours, sunday_calls=settings.get("sunday_calls") is True)
+    notes = [row.content for row in memories if row.kind == MemoryKind.policy]
+    shown["service_area"] = effective_service_area(settings.get("service_area"), notes)
+    return shown
+
+
+def _closed_days(settings: dict) -> list[str]:
+    hours = settings.get("hours")
+    if not isinstance(hours, dict):
+        return []
+    closed = []
+    for day in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"):
+        span = hours.get(day)
+        if not (isinstance(span, list) and len(span) == 2):
+            closed.append(day)
+    return closed
+
+
+def _technicians(session: Session, business_id: int) -> list[dict]:
+    rows = session.scalars(
+        select(Technician).where(Technician.business_id == business_id).order_by(Technician.id)
+    ).all()
+    return [{"id": row.id, "name": row.name, "skills": row.skills} for row in rows]
 
 
 def _open_jobs(session: Session, customer_id: int) -> list[dict]:
@@ -145,7 +181,14 @@ def _recent_messages(session: Session, business_id: int, *, customer_id: int | N
         select(Message).where(Message.conversation_id.in_(conversation_ids)).order_by(Message.id)
     ).all()
     window = rows[-MESSAGE_LIMIT:]
-    return [{"role": row.role.value, "body": row.body, "created_at": shop_iso(row.created_at)} for row in window]
+    return [
+        {
+            "role": row.role.value,
+            "body": agree_with_hours(session, row.body, "") if row.role == MessageRole.assistant else row.body,
+            "created_at": shop_iso(row.created_at),
+        }
+        for row in window
+    ]
 
 
 def _customer_names(session: Session, business_id: int) -> dict[int, str]:

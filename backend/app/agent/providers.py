@@ -2,6 +2,8 @@
 
 import json
 import os
+import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -26,6 +28,8 @@ class UrllibTransport:
     """Real HTTP POST. Unit tests pass a fake transport instead."""
 
     def post_json(self, url: str, headers: dict[str, str], body: dict) -> dict:
+        started = time.perf_counter()
+        _log_request(url, body)
         request = urllib.request.Request(
             url,
             data=json.dumps(body).encode(),
@@ -36,11 +40,15 @@ class UrllibTransport:
             with urllib.request.urlopen(request, timeout=60) as response:
                 raw = response.read().decode()
         except urllib.error.HTTPError as exc:
-            exc.read()
+            detail = exc.read().decode(errors="replace")
+            _log_failure(url, exc.code, detail, started)
             raise LLMError(f"model request failed: {exc.code}") from exc
         except urllib.error.URLError as exc:
+            _log_failure(url, "network", str(exc.reason), started)
             raise LLMError("model request failed") from exc
-        return _json_object(raw)
+        payload = _json_object(raw)
+        _log_response(url, payload, started)
+        return payload
 
 
 class OpenAIClient:
@@ -348,6 +356,112 @@ def _required_value(value: str, name: str) -> str:
 def _optional(env: Mapping[str, str], name: str, default: str) -> str:
     value = env.get(name, "").strip()
     return value or default
+
+
+def _emit(text: str) -> None:
+    print(text, file=sys.stderr, flush=True)
+
+
+def _provider_name(url: str) -> str:
+    if "anthropic" in url:
+        return "anthropic"
+    if "openai" in url:
+        return "openai"
+    return "llm"
+
+
+def _log_request(url: str, body: dict) -> None:
+    lines = [f"--- LLM request {_provider_name(url)} {body.get('model', '')} ---"]
+    system = body.get("system")
+    if isinstance(system, str) and system:
+        lines.append("[system]")
+        lines.append(_show_content(system))
+    for message in body.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        lines.append(f"[{message.get('role', '?')}]")
+        lines.append(_show_content(message.get("content")))
+        calls = message.get("tool_calls")
+        if calls:
+            lines.append(_show_content(json.dumps(calls)))
+    names = [name for name in (_tool_name(tool) for tool in body.get("tools") or []) if name]
+    if names:
+        lines.append("tools: " + ", ".join(names))
+    _emit("\n".join(lines))
+
+
+def _log_response(url: str, payload: dict, started: float) -> None:
+    elapsed = int((time.perf_counter() - started) * 1000)
+    lines = [f"--- LLM response {_provider_name(url)} {elapsed}ms ---"]
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        lines.append("usage: " + json.dumps(usage, ensure_ascii=False))
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        choice = choices[0]
+        finish = choice.get("finish_reason")
+        if finish:
+            lines.append(f"finish: {finish}")
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        lines.append(_show_content(message.get("content")))
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") if isinstance(call.get("function"), dict) else {}
+            arguments = function.get("arguments", "")
+            if isinstance(arguments, str):
+                arguments = _pretty_json(arguments)
+            lines.append(f"tool_call {function.get('name', '')} {arguments}")
+    elif isinstance(payload.get("content"), list):
+        for block in payload["content"]:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                lines.append(str(block.get("text") or ""))
+            elif block.get("type") == "tool_use":
+                lines.append(
+                    f"tool_call {block.get('name', '')} "
+                    + json.dumps(block.get("input"), ensure_ascii=False)
+                )
+    else:
+        lines.append(json.dumps(payload, ensure_ascii=False))
+    lines.append("---")
+    _emit("\n".join(lines))
+
+
+def _log_failure(url: str, code: object, detail: str, started: float) -> None:
+    elapsed = int((time.perf_counter() - started) * 1000)
+    text = detail.strip() or "(empty body)"
+    _emit(f"--- LLM error {_provider_name(url)} {code} {elapsed}ms ---\n{text}\n---")
+
+
+def _tool_name(tool: object) -> str:
+    if not isinstance(tool, dict):
+        return ""
+    function = tool.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return function["name"]
+    name = tool.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _show_content(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return _pretty_json(content)
+    return json.dumps(content, indent=2, ensure_ascii=False)
+
+
+def _pretty_json(text: str) -> str:
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return text
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    return json.dumps(parsed, indent=2, ensure_ascii=False)
 
 
 def _json_object(raw: str) -> dict:

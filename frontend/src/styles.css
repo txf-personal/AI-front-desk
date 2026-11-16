@@ -18,7 +18,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   outline-offset: 2px;
 }
 
-main { max-width: 1120px; margin: 0 auto; padding: 20px 16px 40px; }
+main { max-width: 80rem; margin: 0 auto; padding: 20px 16px 40px; }
 
 header {
   display: flex;
@@ -47,7 +47,93 @@ header h1, header p { color: inherit; }
 header p { margin: 4px 0 0; }
 .eyebrow { margin: 0 0 4px; font-size: 0.75rem; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.75; }
 .clock-readout { text-align: right; }
-.clock-readout time { font-family: "Iowan Old Style", Palatino, Georgia, serif; font-size: 1.35rem; }
+.clock-pop { position: relative; }
+.clock-trigger {
+  display: block;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: inherit;
+}
+.clock-trigger time {
+  display: block;
+  font-family: "Iowan Old Style", Palatino, Georgia, serif;
+  font-size: 1.35rem;
+}
+.clock-trigger:hover time, .clock-trigger[aria-expanded="true"] time { text-decoration: underline; }
+.clock-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 17.5rem;
+  max-width: calc(100vw - 32px);
+  padding: 14px;
+  border: 1px solid #eadfd2;
+  border-radius: 16px;
+  background: #fffdf9;
+  color: #241f1a;
+  box-shadow: 0 16px 40px rgba(36, 31, 26, 0.18);
+  text-align: left;
+}
+.clock-menu p { margin: 0 0 10px; color: #6f655c; font-size: 0.85rem; }
+.month { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-weight: 650; }
+.month button, .calendar button, .face button, .time-row button {
+  padding: 4px 8px;
+  border: 1px solid #e0d3c4;
+  border-radius: 8px;
+  background: #f4efe8;
+  color: #241f1a;
+}
+.calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; }
+.calendar span { padding: 4px 0; color: #6f655c; font-size: 0.72rem; }
+.calendar button { aspect-ratio: 1; padding: 0; }
+.calendar button[aria-pressed="true"], .face button[aria-pressed="true"], .time-row button[aria-pressed="true"] {
+  background: #1f4d4a;
+  border-color: #1f4d4a;
+  color: #f7f3ec;
+}
+.face {
+  position: relative;
+  width: 11.5rem;
+  height: 11.5rem;
+  margin: 14px auto 8px;
+  border: 1px solid #eadfd2;
+  border-radius: 50%;
+  background: #fff;
+}
+.face-time {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.face button {
+  position: absolute;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.time-row { display: flex; align-items: end; gap: 8px; }
+.time-row label { display: grid; gap: 4px; color: #6f655c; font-size: 0.75rem; }
+.time-row select { padding: 6px 8px; border: 1px solid #ddcfc0; border-radius: 8px; background: #fff; color: #241f1a; }
+.face-time { pointer-events: none; }
+.set-clock {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: #1f4d4a;
+  color: #f7f3ec;
+}
+.set-clock:disabled { background: #d9d3cb; color: #6f655c; }
 
 .pill {
   display: inline-block;
@@ -68,11 +154,47 @@ header p { margin: 4px 0 0; }
 }
 
 .desk {
+  --split: 40%;
   display: grid;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.2fr);
-  gap: 16px;
+  grid-template-columns: minmax(17.5rem, var(--split)) 16px minmax(17.5rem, 1fr);
   margin-top: 16px;
-  align-items: start;
+  align-items: stretch;
+}
+.desk[data-dragging="true"] { cursor: col-resize; user-select: none; }
+
+.split {
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.split::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 50%;
+  width: 2px;
+  border-radius: 999px;
+  background: #d9cbbd;
+  transform: translateX(-50%);
+}
+.split:hover::before,
+.split:focus-visible::before,
+.split[data-dragging="true"]::before {
+  width: 3px;
+  background: #1f4d4a;
+}
+.split:focus-visible { outline: none; }
+
+.owner-pane {
+  display: grid;
+  justify-items: stretch;
+  width: 100%;
+}
+.owner-pane > :not(.cards),
+.owner-pane .card:not(:has(.schedule)) {
+  contain: inline-size;
+  min-width: 0;
 }
 
 .pane {
@@ -132,11 +254,30 @@ ul { list-style: none; margin: 0; padding: 0; }
   font-size: 0.82rem;
 }
 
-.caller, .composer { display: grid; gap: 8px; margin-top: 12px; }
+.identity { margin-bottom: 8px; }
+.who-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pencil {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6f655c;
+}
+.pencil:hover,
+.pencil[aria-expanded="true"] { background: #efe4d4; color: #1f4d4a; }
+.contact-read .meta { margin: 2px 0 0; }
+.contact, .caller, .composer { display: grid; gap: 8px; margin-top: 12px; }
+.contact { margin-top: 8px; }
 .composer { grid-template-columns: 1fr auto; align-items: end; }
 label { display: grid; gap: 4px; font-size: 0.85rem; }
 input, textarea {
   width: 100%;
+  min-width: 0;
   padding: 8px 10px;
   border: 1px solid #ddcfc0;
   border-radius: 10px;
@@ -151,7 +292,7 @@ button[type="submit"], .clock button, .card button {
   background: #1f4d4a;
   color: #f7f3ec;
 }
-.caller button[type="submit"] { justify-self: start; }
+.contact button[type="submit"], .caller button[type="submit"] { justify-self: start; }
 
 .thread, .log {
   max-height: 18rem;
@@ -167,6 +308,12 @@ button[type="submit"], .clock button, .card button {
   border-radius: 14px;
   overflow-wrap: anywhere;
 }
+.bubble p { margin: 0.35rem 0 0; white-space: pre-wrap; }
+.bubble ol, .bubble ul { margin: 0.35rem 0 0; padding-left: 1.35rem; }
+.bubble ol { list-style: decimal; }
+.bubble ul { list-style: disc; }
+.bubble li + li { margin-top: 2px; }
+.bubble strong { font-weight: 700; }
 .bubble.customer, .bubble.owner { margin-right: auto; border: 1px solid #eadfd2; background: #fff; }
 .bubble.assistant {
   margin-left: auto;
@@ -177,8 +324,9 @@ button[type="submit"], .clock button, .card button {
 .role { display: block; font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; }
 .empty { margin: 8px 0; color: #6f655c; }
 
-.cards { display: grid; gap: 12px; margin-top: 16px; }
+.cards { display: grid; gap: 12px; margin-top: 16px; min-width: 0; }
 .card {
+  min-width: 0;
   padding: 12px 14px;
   border: 1px solid #eadfd2;
   border-radius: 14px;
@@ -203,10 +351,31 @@ button[type="submit"], .clock button, .card button {
 .inputs { display: block; margin-top: 2px; color: #6f655c; overflow-wrap: anywhere; }
 .who { font-weight: 650; }
 
+.schedule-wrap { width: max-content; max-width: 100%; overflow-x: auto; }
+.schedule { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.schedule th, .schedule td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eadfd2;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.schedule th:last-child, .schedule td:last-child { white-space: normal; max-width: 16rem; }
+.schedule th {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6f655c;
+  font-weight: 650;
+}
+
 @media (max-width: 800px) {
   header, .clock-readout { text-align: left; }
+  .clock-trigger { margin-left: 0; }
+  .clock-menu { right: auto; left: 0; }
   header { flex-direction: column; align-items: start; }
   .desk { grid-template-columns: 1fr; }
+  .split { display: none; }
   .composer { grid-template-columns: 1fr; }
   h1 { font-size: 1.7rem; }
 }

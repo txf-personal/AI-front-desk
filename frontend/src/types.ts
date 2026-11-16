@@ -28,6 +28,7 @@ export type Appointment = {
 export type Automation = {
   id: number
   name: string
+  description?: string
   kind: string
   enabled: boolean
   schedule: Record<string, unknown>

@@ -88,6 +88,45 @@ def run_due(session: Session, *, start: datetime, end: datetime) -> list[Automat
     return ran
 
 
+def run_one(session: Session, job: Automation, *, start: datetime, end: datetime) -> list[AutomationRun]:
+    """Run one job for each due time in (start, end]."""
+    window_start = start.astimezone(SHOP_TZ)
+    window_end = end.astimezone(SHOP_TZ)
+    if window_end <= window_start:
+        return []
+    business = require_business(session)
+    price_book = get_setting(session, "price_book")
+    names = {
+        row.id: row.name
+        for row in session.scalars(select(Customer).where(Customer.business_id == business.id))
+    }
+    technicians = {
+        row.id: row.name
+        for row in session.scalars(select(Technician).where(Technician.business_id == business.id))
+    }
+    clock = _clock_time(job.schedule)
+    if clock is None:
+        return []
+    hour, minute = clock
+    weekday = _weekday_index(job.schedule)
+    if weekday == -1:
+        return []
+    ran: list[AutomationRun] = []
+    for occurrence in _occurrences(window_start, window_end, hour, minute, weekday):
+        ran.extend(
+            _run_job(
+                session,
+                job,
+                occurrence,
+                owner_name=business.owner_name,
+                names=names,
+                technicians=technicians,
+                price_book=price_book,
+            )
+        )
+    return ran
+
+
 def _run_job(session, job, occurrence, *, owner_name, names, technicians, price_book) -> list[AutomationRun]:
     if job.kind == AutomationKind.morning_rundown:
         run = _rundown(session, job, occurrence, owner_name, names, technicians)
@@ -129,7 +168,8 @@ def _reminder(session, job, occurrence, names, technicians):
     key = f"reminder:{occurrence.date().isoformat()}"
     if _already_ran(session, job.id, key):
         return None
-    visit_day = occurrence.date() + timedelta(days=1)
+    offset = _day_offset(job.schedule)
+    visit_day = occurrence.date() + timedelta(days=offset)
     visits = _scheduled(session, job.business_id, visit_day)
     bodies = []
     for visit in visits:
@@ -148,7 +188,11 @@ def _reminder(session, job, occurrence, names, technicians):
         occurrence,
         key,
         summary,
-        f"Day-before reminder lists visits scheduled on {visit_day.isoformat()}.",
+        (
+            f"Same-day reminder lists visits scheduled on {visit_day.isoformat()}."
+            if offset == 0
+            else f"Day-before reminder lists visits scheduled on {visit_day.isoformat()}."
+        ),
         {"date": visit_day.isoformat(), "visits": len(visits)},
     )
 
@@ -360,6 +404,15 @@ def _clock_time(schedule: dict) -> tuple[int, int] | None:
     if not _clock_part(hour, 23) or not _clock_part(minute, 59):
         return None
     return hour, minute
+
+
+def _day_offset(schedule: dict) -> int:
+    if not isinstance(schedule, dict):
+        return 1
+    value = schedule.get("day_offset", 1)
+    if value in (0, 1):
+        return value
+    return 1
 
 
 def _weekday_index(schedule: dict) -> int | None:

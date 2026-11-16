@@ -8,11 +8,26 @@ from fastapi.testclient import TestClient
 from app.agent.loop import run_turn
 from app.agent.providers import FakeLLM
 from app.agent.types import Completion, ToolCall
-from app.clock import advance_clock
+from app.clock import advance_clock, parse_shop_time
 from app.errors import PolicyError
 from app.main import create_app
-from app.models import Automation, AutomationAuthor, AutomationKind, Conversation, ConversationKind, Customer, Message
+from app.models import (
+    AuditEvent,
+    Automation,
+    AutomationAuthor,
+    AutomationKind,
+    Conversation,
+    ConversationKind,
+    Customer,
+    MemoryKind,
+    Message,
+    MessageRole,
+    Technician,
+)
+from app.present import build_bootstrap
 from app.seed import seed
+from app.services.booking import book_appointment
+from app.services.memory import remember
 from app.services.runner import run_due
 from tests.times import assert_wall, pt
 
@@ -149,3 +164,216 @@ def test_customer_cannot_create_an_automation(session):
 
     assert session.scalar(select(func.count()).select_from(Automation)) == before
     assert "create_automation" not in [tool["name"] for tool in fake.calls[0]["tools"]]
+
+
+TODAY = "Every day at 5:00 AM, customers hear about today's visit."
+FRIDAY_FIVE = pt(2026, 11, 13, 5, 0)
+
+
+def _book_priya_friday(session) -> Customer:
+    priya = _customer(session, "Priya Shah")
+    andre = session.scalar(select(Technician).where(Technician.name == "Andre Williams"))
+    assert andre is not None
+    book_appointment(
+        session,
+        customer_id=priya.id,
+        service="leak",
+        start=pt(2026, 11, 13, 9, 0),
+        summary="Leak repair appointment with Andre Williams",
+        reason="Priya asked for Friday at 9",
+        technician_id=andre.id,
+    )
+    return priya
+
+
+def _reminders_at_five(session, customer_id: int) -> list[Message]:
+    rows = session.scalars(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(
+            Conversation.customer_id == customer_id,
+            Message.role == MessageRole.assistant,
+        )
+        .order_by(Message.id)
+    ).all()
+    return [row for row in rows if row.created_at == FRIDAY_FIVE]
+
+
+def test_saying_a_same_day_reminder_messages_priya_at_that_time(session):
+    seed(session)
+    priya = _book_priya_friday(session)
+    fake = FakeLLM([Completion(text="This must not be used.", tool_calls=())])
+
+    turn = run_turn(session, fake, audience="owner", body=TODAY)
+
+    assert fake.calls == []
+    assert turn.reply == "Every day at 5:00 AM, customers with a visit that day will hear about it."
+    job = session.scalar(select(Automation).where(Automation.name == "Same-day reminder"))
+    assert job is not None
+    assert job.schedule == {"hour": 5, "minute": 0, "day_offset": 0}
+    advance_clock(session, until=parse_shop_time("2026-11-13T07:00"))
+    sent = _reminders_at_five(session, priya.id)
+    assert len(sent) == 1
+    assert "Andre Williams is scheduled Friday, November 13 at 9:00 AM" in sent[0].body
+
+
+def test_a_saved_reminder_policy_is_sent_after_the_clock_has_passed_it(session):
+    seed(session)
+    priya = _book_priya_friday(session)
+    remember(
+        session,
+        content=TODAY,
+        kind=MemoryKind.policy,
+        reason="The owner asked for a morning reminder",
+    )
+    advance_clock(session, until=parse_shop_time("2026-11-13T07:00"))
+    assert _reminders_at_five(session, priya.id) == []
+
+    shop = build_bootstrap(session)
+
+    assert TODAY not in [item["content"] for item in shop["shop_memories"]]
+    assert any(item["name"] == "Same-day reminder" for item in shop["automations"])
+    sent = _reminders_at_five(session, priya.id)
+    assert len(sent) == 1
+    assert "Priya Shah, reminder from Northside Plumbing" in sent[0].body
+    build_bootstrap(session)
+    assert len(_reminders_at_five(session, priya.id)) == 1
+
+
+REMOVE = 'remove "Every day at 5:00 PM, customers hear about tomorrow\'s visit."'
+KEPT = "Every day at 5:00 PM, customers hear about tomorrow's visit."
+
+
+def _day_before(session) -> Automation:
+    job = session.scalar(select(Automation).where(Automation.name == "Day-before reminder"))
+    assert job is not None
+    return job
+
+
+def test_the_owner_can_remove_the_day_before_reminder(session):
+    seed(session)
+    fake = FakeLLM([Completion(text="This must not be used.", tool_calls=())])
+
+    turn = run_turn(session, fake, audience="owner", body=REMOVE)
+
+    assert fake.calls == []
+    assert turn.reply == "Every day at 5:00 PM, customers will no longer hear about tomorrow's visit."
+    assert session.scalar(select(Automation).where(Automation.name == "Day-before reminder")) is None
+    assert session.scalar(select(Automation).where(Automation.name == "Morning rundown")) is not None
+    advance_clock(session, until=parse_shop_time("2026-11-13T07:00"))
+    luis = _customer(session, "Luis Alvarez")
+    sent = session.scalars(
+        select(Message.body)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Conversation.customer_id == luis.id)
+    ).all()
+    assert sent == []
+    again = run_turn(session, fake, audience="owner", body=REMOVE)
+    assert again.reply == "That reminder has already been removed."
+    assert session.scalar(select(func.count()).select_from(AuditEvent).where(AuditEvent.action == "delete_automation")) == 1
+
+
+def test_a_customer_cannot_remove_the_day_before_reminder(session):
+    seed(session)
+    james = _customer(session, "James Okonkwo")
+    fake = FakeLLM([Completion(text="I can take a booking, a quote, or a note for Maria.", tool_calls=())])
+
+    run_turn(session, fake, audience="customer", customer_id=james.id, body=REMOVE)
+
+    assert _day_before(session).enabled is True
+
+
+def test_removing_tomorrows_reminder_leaves_a_same_day_reminder(session):
+    seed(session)
+    fake = FakeLLM([Completion(text="This must not be used.", tool_calls=())])
+    run_turn(session, fake, audience="owner", body=TODAY)
+
+    run_turn(session, fake, audience="owner", body=REMOVE)
+
+    same_day = session.scalar(select(Automation).where(Automation.name == "Same-day reminder"))
+    assert same_day is not None and same_day.enabled is True
+    assert session.scalar(select(Automation).where(Automation.name == "Day-before reminder")) is None
+
+
+def test_an_earlier_reminder_removal_is_applied(session):
+    seed(session)
+    business_id = session.scalar(select(Automation.business_id).limit(1))
+    conversation = Conversation(
+        business_id=business_id,
+        customer_id=None,
+        kind=ConversationKind.owner,
+        created_at=THURSDAY,
+    )
+    session.add(conversation)
+    session.flush()
+    session.add(Message(conversation_id=conversation.id, role=MessageRole.owner, body=REMOVE, created_at=THURSDAY))
+    session.commit()
+
+    shop = build_bootstrap(session)
+
+    assert all(item["name"] != "Day-before reminder" for item in shop["automations"])
+    bodies = [message["body"] for message in shop["conversations"][0]["messages"]]
+    assert bodies[-1] == "Every day at 5:00 PM, customers will no longer hear about tomorrow's visit."
+    again = [message["body"] for message in build_bootstrap(session)["conversations"][0]["messages"]]
+    assert again.count(bodies[-1]) == 1
+
+
+def test_asking_for_the_reminder_again_keeps_it_on(session):
+    seed(session)
+    business_id = session.scalar(select(Automation.business_id).limit(1))
+    conversation = Conversation(
+        business_id=business_id,
+        customer_id=None,
+        kind=ConversationKind.owner,
+        created_at=THURSDAY,
+    )
+    session.add(conversation)
+    session.flush()
+    session.add_all(
+        [
+            Message(conversation_id=conversation.id, role=MessageRole.owner, body=REMOVE, created_at=THURSDAY),
+            Message(conversation_id=conversation.id, role=MessageRole.owner, body=KEPT, created_at=THURSDAY),
+        ]
+    )
+    session.commit()
+
+    shop = build_bootstrap(session)
+
+    reminder = next(item for item in shop["automations"] if item["name"] == "Day-before reminder")
+    assert reminder["enabled"] is True
+
+
+def test_a_reminder_that_already_ran_can_be_removed(session):
+    seed(session)
+    advance_clock(session, until=parse_shop_time("2026-11-13T07:00"))
+    fake = FakeLLM([Completion(text="This must not be used.", tool_calls=())])
+
+    run_turn(session, fake, audience="owner", body=REMOVE)
+
+    assert session.scalar(select(Automation).where(Automation.name == "Day-before reminder")) is None
+
+
+def test_a_turned_off_reminder_is_deleted_on_the_next_load(session):
+    seed(session)
+    old = _day_before(session)
+    old.enabled = False
+    session.commit()
+
+    shop = build_bootstrap(session)
+
+    assert all(item["id"] != old.id for item in shop["automations"])
+    assert all(item["name"] != "Day-before reminder" for item in shop["automations"])
+
+
+def test_the_owner_can_add_the_reminder_again(session):
+    seed(session)
+    fake = FakeLLM([Completion(text="This must not be used.", tool_calls=())])
+    run_turn(session, fake, audience="owner", body=REMOVE)
+
+    turn = run_turn(session, fake, audience="owner", body=KEPT)
+
+    assert fake.calls == []
+    assert turn.reply == "Every day at 5:00 PM, customers will hear about tomorrow's visit."
+    job = _day_before(session)
+    assert job.schedule == {"hour": 17, "minute": 0, "day_offset": 1}
+    assert session.scalar(select(func.count()).select_from(Automation).where(Automation.name == "Day-before reminder")) == 1

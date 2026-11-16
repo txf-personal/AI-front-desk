@@ -21,11 +21,34 @@ class ClockNotSeeded(RuntimeError):
     """Raised when a clock read happens before the shop is seeded."""
 
 
-def advance_time(current: datetime, *, hours: float | None = None, to: str | None = None) -> datetime:
+def parse_shop_time(value: str) -> datetime:
+    """Read a shop-wall time. A value without a zone is America/Los_Angeles."""
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("clock time must include a date and time") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=SHOP_TZ)
+    return parsed.astimezone(SHOP_TZ).replace(second=0, microsecond=0)
+
+
+def advance_time(
+    current: datetime,
+    *,
+    hours: float | None = None,
+    to: str | None = None,
+    until: datetime | None = None,
+) -> datetime:
     """Return the next shop-local time. `current` must be timezone-aware."""
-    if (hours is None) == (to is None):
-        raise ValueError("provide exactly one of hours or to")
+    if sum(item is not None for item in (hours, to, until)) != 1:
+        raise ValueError("provide exactly one of hours, to, or until")
     local = _as_shop(current)
+    if until is not None:
+        target = _as_shop(until).replace(second=0, microsecond=0)
+        if target <= local:
+            raise ValueError("clock only moves forward")
+        return target
     if hours is not None:
         _require_positive_hours(hours)
         return local + timedelta(hours=hours)
@@ -61,16 +84,24 @@ def set_clock(session: Session, when: datetime) -> datetime:
     return row.current_time.astimezone(SHOP_TZ)
 
 
-def advance_clock(session: Session, *, hours: float | None = None, to: str | None = None) -> datetime:
+def advance_clock(
+    session: Session,
+    *,
+    hours: float | None = None,
+    to: str | None = None,
+    until: datetime | None = None,
+) -> datetime:
     """Move the clock forward and run automations whose time was crossed."""
     previous = read_clock(session)
-    current = advance_time(previous, hours=hours, to=to)
+    current = advance_time(previous, hours=hours, to=to, until=until)
     row = _clock_row(session)
     row.current_time = current
     session.flush()
+    from app.services.booking import complete_past_visits
     from app.services.runner import run_due
 
     run_due(session, start=previous, end=current)
+    complete_past_visits(session)
     session.commit()
     return row.current_time.astimezone(SHOP_TZ)
 

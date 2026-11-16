@@ -1,6 +1,9 @@
 """Provider adapters, parsed from saved payloads. No network calls."""
 
+import io
 import json
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -14,6 +17,7 @@ from app.agent.providers import (
     AnthropicClient,
     FakeLLM,
     OpenAIClient,
+    UrllibTransport,
     build_client,
     anthropic_body,
     openai_body,
@@ -308,3 +312,100 @@ def test_fake_model_returns_scripted_replies_in_order():
     assert fake.calls[1]["tools"] == []
     with pytest.raises(LLMError, match="no scripted reply"):
         fake.complete(MESSAGES, [])
+
+
+class _Body:
+    def __init__(self, raw: bytes):
+        self.raw = raw
+
+    def read(self) -> bytes:
+        return self.raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_a_live_call_is_printed_without_the_key(monkeypatch, capsys):
+    secret = "sk-test-secret"
+    payload = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "check_availability",
+                                "arguments": json.dumps({"service": "drain", "day": "2026-11-14"}),
+                            }
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 4},
+    }
+
+    def fake_urlopen(request, timeout):
+        assert secret not in request.data.decode()
+        return _Body(json.dumps(payload).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    result = UrllibTransport().post_json(
+        OPENAI_URL,
+        {"Authorization": f"Bearer {secret}"},
+        {
+            "model": "gpt-5",
+            "messages": [
+                {"role": "system", "content": json.dumps({"clock": "Thu"})},
+                {"role": "user", "content": "how much"},
+            ],
+            "tools": [{"type": "function", "function": {"name": "check_availability"}}],
+        },
+    )
+
+    assert result["usage"]["prompt_tokens"] == 12
+    logged = capsys.readouterr().err
+    assert "--- LLM request openai gpt-5 ---" in logged
+    assert "[user]\nhow much" in logged
+    assert '"clock": "Thu"' in logged
+    assert "tools: check_availability" in logged
+    assert "--- LLM response openai" in logged
+    assert "finish: tool_calls" in logged
+    assert "tool_call check_availability" in logged
+    assert '"service": "drain"' in logged
+    assert "prompt_tokens" in logged
+    assert secret not in logged
+    assert "Bearer" not in logged
+
+
+def test_a_failed_call_prints_the_status_and_not_the_key(monkeypatch, capsys):
+    secret = "sk-test-secret"
+
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            None,
+            io.BytesIO(b'{"error":"slow down"}'),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(LLMError, match="model request failed: 429"):
+        UrllibTransport().post_json(
+            ANTHROPIC_URL,
+            {"x-api-key": secret},
+            {"model": "claude-test", "messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    logged = capsys.readouterr().err
+    assert "--- LLM request anthropic claude-test ---" in logged
+    assert "[user]\nhello" in logged
+    assert "--- LLM error anthropic 429" in logged
+    assert "slow down" in logged
+    assert secret not in logged

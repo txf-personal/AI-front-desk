@@ -19,7 +19,22 @@ from app.settings_store import all_settings, require_business
 
 
 def build_bootstrap(session: Session) -> dict:
+    from app.services.booking import complete_past_visits
+
+    from app.services.automations import apply_stated_reminder_removals, install_stated_reminders
+
+    install_stated_reminders(session)
+    apply_stated_reminder_removals(session)
+    from app.settings_store import apply_stated_service_areas
+
+    apply_stated_service_areas(session)
     business = require_business(session)
+    from app.agent.visit_choice import book_pending_choices, fill_stated_offers
+
+    book_pending_choices(session)
+    fill_stated_offers(session)
+    if complete_past_visits(session):
+        session.commit()
     customers = session.scalars(
         select(Customer).where(Customer.business_id == business.id).order_by(Customer.id)
     ).all()
@@ -65,6 +80,7 @@ def build_bootstrap(session: Session) -> dict:
             {
                 "id": row.id,
                 "name": row.name,
+                "description": row.description,
                 "kind": row.kind.value,
                 "enabled": row.enabled,
                 "schedule": row.schedule,

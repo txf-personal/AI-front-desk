@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 
 from app.agent.providers import FakeLLM
 from app.agent.types import Completion
-from app.clock import advance_clock
+from app.clock import advance_clock, parse_shop_time
 from app.main import create_app
 from app.models import Appointment, AppointmentStatus, Conversation, ConversationKind, Customer, Message
 from app.seed import seed
@@ -69,6 +69,13 @@ def test_friday_morning_sends_one_chase_one_reminder_and_one_rundown(session):
     assert_wall(rundown[0].created_at, FRIDAY_MORNING)
     assert_wall(chase[0].created_at, FRIDAY_MORNING)
     assert session.scalar(select(func.count()).select_from(Message)) == 3
+
+
+def test_setting_friday_morning_runs_the_same_jobs(session):
+    seed(session)
+    assert advance_clock(session, until=parse_shop_time("2026-11-13T07:00")) == FRIDAY_MORNING
+    rundown = _bodies(session, customer_id=None, kind=ConversationKind.owner)
+    assert [message.body for message in rundown] == [RUNDOWN]
 
 
 def test_advancing_again_does_not_send_a_second_copy(session):

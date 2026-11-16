@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from app.agent.errors import ConfigError, LLMError
 from app.agent.loop import run_turn
 from app.agent.providers import build_client
-from app.clock import ClockNotSeeded, advance_clock
+from app.clock import ClockNotSeeded, advance_clock, parse_shop_time
 from app.errors import PolicyError
 from app.present import build_bootstrap, customer_payload, escalation_payload, iso
-from app.services.customers import create_customer
+from app.services.customers import create_customer, update_contact
 from app.services.escalations import resolve_escalation
 
 router = APIRouter(prefix="/api")
@@ -36,16 +36,40 @@ class NewCustomer(BaseModel):
         return text
 
 
+class CustomerContact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phone: str
+    address: str | None = None
+
+    @field_validator("phone")
+    @classmethod
+    def phone_not_blank(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("must not be blank")
+        return text
+
+    @field_validator("address")
+    @classmethod
+    def blank_address(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+
 class AdvanceClock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hours: float | None = None
     to: Literal["next_morning", "next_day"] | None = None
+    until: str | None = None
 
     @model_validator(mode="after")
     def one_change(self):
-        if (self.hours is None) == (self.to is None):
-            raise ValueError("provide exactly one of hours or to")
+        if sum(item is not None for item in (self.hours, self.to, self.until)) != 1:
+            raise ValueError("provide exactly one of hours, to, or until")
         return self
 
 
@@ -105,10 +129,22 @@ def post_customer(body: NewCustomer, session: SessionDep):
     return customer_payload(customer)
 
 
+@router.patch("/customers/{customer_id}")
+def patch_customer(customer_id: int, body: CustomerContact, session: SessionDep):
+    customer = update_contact(
+        session,
+        customer_id=customer_id,
+        phone=body.phone,
+        address=body.address,
+    )
+    return customer_payload(customer)
+
+
 @router.post("/clock/advance")
 def post_clock(body: AdvanceClock, session: SessionDep):
     try:
-        clock = advance_clock(session, hours=body.hours, to=body.to)
+        target = parse_shop_time(body.until) if body.until is not None else None
+        clock = advance_clock(session, hours=body.hours, to=body.to, until=target)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"clock": iso(clock)}

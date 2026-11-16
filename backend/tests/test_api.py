@@ -148,11 +148,53 @@ def test_create_caller_persists_name_and_phone(client):
     assert match["id"] == created.json()["id"]
 
 
-def test_duplicate_phone_is_rejected(client):
+def test_contact_update_changes_phone_and_address(client):
+    james = next(customer for customer in client.get("/api/bootstrap").json()["customers"] if customer["name"] == "James Okonkwo")
+    response = client.patch(
+        f"/api/customers/{james['id']}",
+        json={"phone": " 206-555-0199 ", "address": "  9 Pike St, Seattle, WA 98115  "},
+    )
+    assert response.status_code == 200
+    assert response.json()["phone"] == "206-555-0199"
+    assert response.json()["address"] == "9 Pike St, Seattle, WA 98115"
+    again = next(customer for customer in client.get("/api/bootstrap").json()["customers"] if customer["id"] == james["id"])
+    assert again["phone"] == "206-555-0199"
+    assert again["address"] == "9 Pike St, Seattle, WA 98115"
+    audit = client.get("/api/bootstrap").json()["audits"][-1]
+    assert audit["action"] == "update_customer"
+    assert audit["reasoning"] == "Contact updated"
+
+
+def test_a_blank_contact_address_clears_it(client):
+    james = next(customer for customer in client.get("/api/bootstrap").json()["customers"] if customer["name"] == "James Okonkwo")
+    response = client.patch(f"/api/customers/{james['id']}", json={"phone": james["phone"], "address": "  "})
+    assert response.status_code == 200
+    assert response.json()["address"] is None
+
+
+def test_a_duplicate_contact_phone_is_rejected(client):
     before = client.get("/api/bootstrap").json()
-    response = client.post("/api/customers", json={"name": "Copy of James", "phone": "206-555-0101"})
+    james = next(customer for customer in before["customers"] if customer["name"] == "James Okonkwo")
+    response = client.patch(f"/api/customers/{james['id']}", json={"phone": "206-555-0103", "address": james["address"]})
     assert response.status_code == 409
     assert response.json()["detail"] == "phone is already on file"
+    assert client.get("/api/bootstrap").json()["customers"] == before["customers"]
+
+
+def test_a_phone_without_dashes_is_stored_with_them(client):
+    created = client.post("/api/customers", json={"name": "Casey Brooks", "phone": "2065550188"})
+    assert created.status_code == 201
+    assert created.json()["phone"] == "206-555-0188"
+
+
+def test_duplicate_phone_is_rejected(client):
+    before = client.get("/api/bootstrap").json()
+    dashed = client.post("/api/customers", json={"name": "Copy of James", "phone": "206-555-0101"})
+    digits = client.post("/api/customers", json={"name": "Copy of James", "phone": "2065550101"})
+    assert dashed.status_code == 409
+    assert digits.status_code == 409
+    assert dashed.json()["detail"] == "phone is already on file"
+    assert digits.json()["detail"] == "phone is already on file"
     assert client.get("/api/bootstrap").json()["customers"] == before["customers"]
     assert client.get("/api/bootstrap").json()["audits"] == before["audits"]
 
@@ -201,6 +243,12 @@ def test_other_clock_advances(client, payload, clock):
     assert response.json()["clock"] == clock
 
 
+def test_until_moves_the_clock_to_that_shop_minute(client):
+    response = client.post("/api/clock/advance", json={"until": "2026-11-13T07:00"})
+    assert response.status_code == 200
+    assert response.json()["clock"] == NEXT_MORNING
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -210,6 +258,9 @@ def test_other_clock_advances(client, payload, clock):
         {"hours": 0},
         {"hours": -1},
         {"hours": 4, "extra": True},
+        {"until": "2026-11-12T15:00"},
+        {"until": "tomorrow"},
+        {"until": "2026-11-13T07:00", "hours": 1},
     ],
 )
 def test_bad_clock_advance_leaves_the_clock(client, payload):

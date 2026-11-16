@@ -1,5 +1,7 @@
 """Record a caller on the shop's book."""
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -19,12 +21,9 @@ def create_customer(
     address: str | None = None,
 ) -> Customer:
     name_text = require_text(name, "name is required")
-    phone_text = require_text(phone, "phone is required")
+    phone_text = normalize_phone(phone)
     business = require_business(session)
-    existing = session.scalar(
-        select(Customer).where(Customer.business_id == business.id, Customer.phone == phone_text)
-    )
-    if existing is not None:
+    if _phone_on_file(session, business.id, phone_text) is not None:
         raise PolicyError("phone is already on file")
     row = Customer(
         business_id=business.id,
@@ -50,6 +49,43 @@ def create_customer(
     return row
 
 
+def update_contact(
+    session: Session,
+    *,
+    customer_id: int,
+    phone: str,
+    address: str | None,
+) -> Customer:
+    """Replace the phone and address on file. A blank address clears it."""
+    phone_text = normalize_phone(phone)
+    address_text = _blank_to_none(address)
+    business = require_business(session)
+    customer = session.get(Customer, customer_id)
+    if customer is None or customer.business_id != business.id:
+        raise PolicyError("unknown customer")
+    if normalize_phone(customer.phone) == phone_text and customer.address == address_text:
+        if customer.phone != phone_text:
+            customer.phone = phone_text
+            session.commit()
+        return customer
+    if _phone_on_file(session, business.id, phone_text, except_id=customer.id) is not None:
+        raise PolicyError("phone is already on file")
+    customer.phone = phone_text
+    customer.address = address_text
+    write_audit(
+        session,
+        business_id=business.id,
+        actor=AuditActor.owner,
+        action="update_customer",
+        reasoning="Contact updated",
+        payload={"customer_id": customer.id, "phone": phone_text, "address": address_text},
+        related_type="customer",
+        related_id=customer.id,
+    )
+    session.commit()
+    return customer
+
+
 def set_address(session: Session, *, customer_id: int, address: str, reason: str) -> Customer:
     """Store the street address booking requires. A blank address writes nothing."""
     text = require_text(address, "address is required")
@@ -70,6 +106,29 @@ def set_address(session: Session, *, customer_id: int, address: str, reason: str
     )
     session.commit()
     return customer
+
+
+def normalize_phone(value: str) -> str:
+    """Store one shape. Dashes and other separators do not make a second number."""
+    text = require_text(value, "phone is required")
+    digits = re.sub(r"\D", "", text)
+    if not digits:
+        raise PolicyError("phone is required")
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return digits
+
+
+def _phone_on_file(session: Session, business_id: int, phone_text: str, *, except_id: int | None = None) -> Customer | None:
+    rows = session.scalars(select(Customer).where(Customer.business_id == business_id)).all()
+    for row in rows:
+        if except_id is not None and row.id == except_id:
+            continue
+        if normalize_phone(row.phone) == phone_text:
+            return row
+    return None
 
 
 def _blank_to_none(value: str | None) -> str | None:

@@ -12,6 +12,7 @@ from app.clock import (
     ClockNotSeeded,
     advance_clock,
     advance_time,
+    parse_shop_time,
     read_clock,
     set_clock,
 )
@@ -76,6 +77,26 @@ def test_advance_time_requires_exactly_one_change():
         advance_time(THURSDAY_AFTERNOON)
     with pytest.raises(ValueError, match="exactly one"):
         advance_time(THURSDAY_AFTERNOON, hours=4, to="next_day")
+    with pytest.raises(ValueError, match="exactly one"):
+        advance_time(THURSDAY_AFTERNOON, hours=4, until=FRIDAY_MORNING)
+
+
+def test_a_chosen_time_must_be_later_and_uses_the_shop_zone():
+    assert parse_shop_time("2026-11-13T07:00") == FRIDAY_MORNING
+    assert advance_time(THURSDAY_AFTERNOON, until=parse_shop_time("2026-11-13T07:30")) == pt(2026, 11, 13, 7, 30)
+    with pytest.raises(ValueError, match="clock only moves forward"):
+        advance_time(THURSDAY_AFTERNOON, until=THURSDAY_AFTERNOON)
+    with pytest.raises(ValueError, match="clock only moves forward"):
+        advance_time(THURSDAY_AFTERNOON, until=pt(2026, 11, 12, 15, 59))
+    with pytest.raises(ValueError, match="date and time"):
+        parse_shop_time("tomorrow")
+
+
+def test_setting_a_later_minute_persists(session, session_factory):
+    seed(session)
+    assert advance_clock(session, until=parse_shop_time("2026-11-13T07:00")) == FRIDAY_MORNING
+    with session_factory() as other:
+        assert read_clock(other) == FRIDAY_MORNING
 
 
 @pytest.mark.parametrize("target", ["friday", ""])
@@ -164,6 +185,24 @@ def test_clock_survives_reopening_a_file_database(tmp_path):
         assert read_clock(db) == FRIDAY_MORNING
         assert db.scalar(select(func.count()).select_from(Customer)) == 5
     reopened.dispose()
+
+
+def test_a_visit_is_completed_when_the_clock_passes_its_end(session):
+    seed(session)
+    luis = session.scalar(
+        select(Appointment).where(
+            Appointment.status == AppointmentStatus.scheduled,
+            Appointment.summary == "Main bathroom drain",
+        )
+    )
+    assert luis is not None
+    advance_clock(session, until=parse_shop_time("2026-11-13T09:30"))
+    session.refresh(luis)
+    assert luis.status == AppointmentStatus.scheduled
+
+    advance_clock(session, until=parse_shop_time("2026-11-13T10:00"))
+    session.refresh(luis)
+    assert luis.status == AppointmentStatus.completed
 
 
 def test_next_morning_from_seed_is_seventeen_hours_before_luis_visit(session):

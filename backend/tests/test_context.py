@@ -9,6 +9,7 @@ from app.agent.context import MESSAGE_LIMIT, build_context_pack
 from app.errors import PolicyError
 from app.models import Conversation, ConversationKind, Customer, Memory, MemoryKind, Message, MessageRole
 from app.seed import seed
+from app.settings_store import set_setting
 from app.services.memory import remember
 from tests.times import pt
 
@@ -55,6 +56,12 @@ def test_james_pack_has_his_address_and_gate_code_only(session):
     assert pack["customer"]["memories"] == [{"kind": "access", "content": "Gate code 4481"}]
     assert pack["open_jobs"] == []
     assert pack["recent_messages"] == []
+    assert [person["name"] for person in pack["technicians"]] == [
+        "Andre Williams",
+        "Brooke Hale",
+        "Chris Patel",
+        "Dana Okada",
+    ]
     assert pack["settings"]["sunday_calls"] is True
     assert "4481" in blob
     assert "Dog in the yard" not in blob
@@ -141,6 +148,62 @@ def test_recent_messages_keep_the_newest_window(session):
     assert "m00" not in bodies
 
 
+def test_open_sunday_is_shown_with_monday_hours(session):
+    seed(session)
+    james = _customer(session, "James Okonkwo")
+    pack = build_context_pack(session, audience="customer", customer_id=james.id)
+    assert pack["settings"]["hours"]["sunday"] == ["08:00", "17:00"]
+    assert pack["settings"]["hours"]["saturday"] == ["08:00", "17:00"]
+    assert pack["closed_days"] == []
+
+    set_setting(session, "sunday_calls", False, reason="Sunday is closed")
+    closed = build_context_pack(session, audience="customer", customer_id=james.id)
+    assert closed["settings"]["hours"]["sunday"] is None
+    assert closed["settings"]["hours"]["saturday"] == ["08:00", "17:00"]
+    assert closed["closed_days"] == ["sunday"]
+
+
+def test_a_stale_closed_sunday_reply_follows_the_current_hours(session):
+    seed(session)
+    james = _customer(session, "James Okonkwo")
+    conversation = Conversation(
+        business_id=james.business_id,
+        customer_id=james.id,
+        kind=ConversationKind.customer,
+        created_at=CLOCK,
+    )
+    session.add(conversation)
+    session.flush()
+    session.add_all(
+        [
+            Message(
+                conversation_id=conversation.id,
+                role=MessageRole.assistant,
+                body="Our shop is closed on Sundays, so we cannot book.",
+                created_at=CLOCK,
+            ),
+            Message(
+                conversation_id=conversation.id,
+                role=MessageRole.customer,
+                body="Please book Sunday at 10:00 AM.",
+                created_at=CLOCK,
+            ),
+        ]
+    )
+    session.commit()
+
+    pack = build_context_pack(session, audience="customer", customer_id=james.id)
+
+    assert [message["body"] for message in pack["recent_messages"]] == [
+        "Sunday is open from 8:00 AM to 5:00 PM.",
+        "Please book Sunday at 10:00 AM.",
+    ]
+
+    set_setting(session, "sunday_calls", False, reason="Sunday is closed")
+    closed = build_context_pack(session, audience="customer", customer_id=james.id)
+    assert closed["recent_messages"][0]["body"] == "Our shop is closed on Sundays, so we cannot book."
+
+
 def test_owner_pack_has_sunday_setting_open_quotes_and_the_schedule(session):
     seed(session)
     pack = build_context_pack(session, audience="owner")
@@ -208,9 +271,25 @@ def test_shop_policy_is_visible_and_customer_facts_stay_put(session):
 
     assert owner["shop_memories"] == expected
     assert customer["shop_memories"] == expected
+    assert owner["settings"]["service_area"] == ["98103", "98115", "98125", "98133", "98177"]
     assert "Old rule" not in json.dumps(owner)
     assert "Gate code 4481" not in json.dumps(owner)
     assert "Dog in the yard" not in json.dumps(owner)
+
+
+def test_a_service_area_policy_joins_the_setting(session):
+    seed(session)
+    remember(
+        session,
+        content="Add service area 98104 is now allowed.",
+        kind=MemoryKind.policy,
+        reason="Owner added 98104",
+    )
+
+    pack = build_context_pack(session, audience="owner")
+
+    assert pack["settings"]["service_area"] == ["98103", "98115", "98125", "98133", "98177", "98104"]
+    assert pack["shop_memories"] == [{"kind": "policy", "content": "Add service area 98104 is now allowed."}]
 
 
 def test_owner_note_about_a_customer_stays_with_the_owner(session):
